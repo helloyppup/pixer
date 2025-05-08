@@ -113,7 +113,7 @@ def mapped_mosaic(img, grid_size, palette):
     avail = grid_size - 2 * padding
     # 计算统一字号
     sizes = []
-    FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "arial.ttf")
+    FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "cambriaz.ttf")
 
     for name in palette:
         try:
