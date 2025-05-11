@@ -1,3 +1,4 @@
+
 import streamlit as st
 import json
 from PIL import Image, ImageDraw, ImageFont
@@ -5,13 +6,20 @@ import numpy as np
 import os
 import pickle
 import math
+import io
 
 # 可选：使用 skimage 进行 RGB 到 LAB 转换以提升颜色感知精度
 try:
     from skimage.color import rgb2lab
-    USE_LAB = False
+    USE_LAB = True
 except ImportError:
     USE_LAB = False
+
+FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "GOTHIC.TTF")
+
+Image.MAX_IMAGE_PIXELS = 10**9
+
+FONT_SIZE=22
 
 # ---------- 调色板加载与持久化 ----------
 def save_palette_to_file(palette, filename='saved_palette.pkl'):
@@ -82,6 +90,7 @@ def draw_grid_overlay(img, grid_size, line_color=(255,0,0,128)):
         draw.line([(0,y),(w,y)], fill=line_color, width=1)
     return Image.alpha_composite(img.convert('RGBA'), overlay)
 
+
 def basic_mosaic(img, grid_size, palette):
     w, h = img.size
     arr = np.array(img)
@@ -101,41 +110,13 @@ def basic_mosaic(img, grid_size, palette):
             draw.rectangle([x, y, x+grid_size, y+grid_size], fill=fill)
     return out
 
-
-def mapped_mosaic(img, grid_size, palette):
+def draw_list(img, grid_size, palette):
     w, h = img.size
     arr = np.array(img)
-    out = Image.new('RGB', (w, h))
-    draw = ImageDraw.Draw(out)
-    color_count = {}
-    # 内边距与可用尺寸
-    padding = max(int(grid_size * 0.1), 2)
-    avail = grid_size - 2 * padding
-    # 计算统一字号
-    sizes = []
-    FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "arial.ttf")
-
-    for name in palette:
-        try:
-            f_tmp = ImageFont.truetype(FONT_PATH, avail)
-        except:
-            f_tmp = ImageFont.load_default()
-        bbox = f_tmp.getbbox(name)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        if tw <= avail and th <= avail:
-            sizes.append(avail)
-        else:
-            scale = min(avail / tw, avail / th)
-            sizes.append(max(int(avail * scale), 6))
-    uniform_size = min(sizes) if sizes else max(avail, 6)
-    try:
-        font = ImageFont.truetype(FONT_PATH, uniform_size)
-    except:
-        font = ImageFont.load_default()
-    # 遍历绘制
+    out_list = {}
     for y in range(0, h, grid_size):
         for x in range(0, w, grid_size):
-            box = arr[y:y+grid_size, x:x+grid_size]
+            box = arr[y:y + grid_size, x:x + grid_size]
             if not box.size:
                 continue
             color = predominant_color(box)
@@ -143,88 +124,422 @@ def mapped_mosaic(img, grid_size, palette):
             if isinstance(palette[name], tuple):
                 fill = palette[name]
             else:
-                fill = tuple(int(palette[name].lstrip('#')[i:i+2],16) for i in (0,2,4))
-            draw.rectangle([x, y, x+grid_size, y+grid_size], fill=fill)
-            brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
-            text_color = (0,0,0) if brightness > 186 else (255,255,255)
-            bbox = font.getbbox(name)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            tx = x + padding + (avail - tw) / 2
-            ty = y + padding + (avail - th) / 2
-            draw.text((tx, ty), name, fill=text_color, font=font)
-            color_count[name] = color_count.get(name, 0) + 1
-    return out, color_count, font, padding, avail
+                fill = tuple(int(palette[name].lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
+            out_list[(x, y)] = [color, name, fill]
+    return out_list
 
 
-def annotate_mapped(mosaic, grid_size, font, padding, avail):
-    w, h = mosaic.size
-    cols = w // grid_size
-    rows = h // grid_size
-    bbox = font.getbbox(str(max(rows - 1, cols - 1)))
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    margin_left = tw + padding * 2
-    margin_top = th + padding * 2
-    annotated = Image.new('RGB', (margin_left + w, margin_top + h), (200,200,200))
+
+def calculate_cell_size(out_list, font_path=FONT_PATH ):
+    """
+    计算绘制方格的边长：
+    1. 使用 font_path 指定的字体，字号固定为 14。
+    2. 遍历 out_list 中每个格子的 name，测量其文字宽高。
+    3. 取最大宽度或高度（以较大值为准），并在此基础上增加 10% 内边距。
+    4. 返回向上取整的正方形边长（整数像素）。
+
+    参数:
+        out_list: dict, 键为 (x,y) 或其他任意索引，值为 [color, name, fill]
+        font_path: str, 字体文件路径 (例如 "fonts/cambriaz.ttf")
+
+    返回:
+        int, 方格边长 (像素)
+    """
+
+    # 加载 22 号字体
+    font = ImageFont.truetype(font_path, FONT_SIZE)
+
+    max_w = 0
+    max_h = 0
+
+    # 如果 out_list 是字典：遍历其 values；如果是二维列表，也可以 flatten
+    iterable = out_list.values() if hasattr(out_list, 'values') else [
+        cell for row in out_list for cell in row if cell is not None
+    ]
+
+    for entry in iterable:
+        # entry 格式应为 [原色, name, fill]
+        name = entry[1]
+        # 获取文字的边界框 (x0, y0, x1, y1)
+        bbox = font.getbbox(name)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        if w > max_w:
+            max_w = w
+        if h > max_h:
+            max_h = h
+
+    # 以最大维度为基准，加 20% padding
+    base = max(max_w, max_h)
+    cell_size = int((base * 1.2) + 0.5)  # 四舍五入到最近整数
+
+    return cell_size
+
+
+def mapped_mosaic(img, grid_size, palette):
+    # 1) 用 draw_list 拆分，得到 {(x,y): [orig_color, name, fill], ...}
+    out_list = draw_list(img, grid_size, palette)
+
+    # 2) 测算每个方格的边长
+    cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
+
+    # 3) 根据 out_list 键自动确定行列数
+    x_coords = sorted({x for (x, y) in out_list.keys()})
+    y_coords = sorted({y for (x, y) in out_list.keys()})
+    cols = len(x_coords)
+    rows = len(y_coords)
+
+    # 4) 建立新画布
+    new_w = cols * cell_size
+    new_h = rows * cell_size
+    out_img = Image.new('RGB', (new_w, new_h))
+    draw = ImageDraw.Draw(out_img)
+
+    # 5) 加载 22 号字体
+    font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+
+    color_count = {}
+
+    # 6) 遍历每个格子，绘制色块＋文字
+    for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
+        # 计算在新画布上的行列索引
+        col = x_coords.index(orig_x)
+        row = y_coords.index(orig_y)
+        x0 = col * cell_size
+        y0 = row * cell_size
+
+        # 6.1 绘制填充方块
+        draw.rectangle(
+            [x0, y0, x0 + cell_size, y0 + cell_size],
+            fill=fill,
+            outline=None
+        )
+
+        # 6.2 决定文字颜色（明亮用黑，暗色用白）
+        brightness = fill[0]*0.299 + fill[1]*0.587 + fill[2]*0.114
+        text_color = (0,0,0) if brightness > 186 else (255,255,255)
+
+        # 6.3 测量文字尺寸，居中绘制
+        bbox = font.getbbox(name)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = x0 + (cell_size - tw) / 2
+        ty = y0 + (cell_size - th) / 2
+        draw.text((tx, ty), name, fill=text_color, font=font)
+
+        # 6.4 更新计数
+        color_count[name] = color_count.get(name, 0) + 1
+
+    return out_img, color_count, font, cell_size,cols, rows
+
+# def mapped_mosaic(img, grid_size, palette):
+#     w, h = img.size
+#     arr = np.array(img)
+#     out = Image.new('RGB', (w, h))
+#     draw = ImageDraw.Draw(out)
+#     color_count = {}
+#     # 内边距与可用尺寸
+#     padding = max(int(grid_size * 0.1), 2)
+#     avail = grid_size - 2 * padding
+#     # 计算统一字号
+#     sizes = []
+#     FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "cambriaz.ttf")
+#     FIXED_FONT_SIZE=22
+#
+#
+#
+#     for name in palette:
+#         try:
+#             f_tmp = ImageFont.truetype(FONT_PATH, avail)
+#         except:
+#             f_tmp = ImageFont.load_default()
+#         bbox = f_tmp.getbbox(name)
+#         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+#         if tw <= avail and th <= avail:
+#             sizes.append(avail)
+#         else:
+#             scale = min(avail / tw, avail / th)
+#             sizes.append(max(int(avail * scale), 6))
+#     uniform_size = min(sizes) if sizes else max(avail, 6)
+#     try:
+#         font = ImageFont.truetype(FONT_PATH, uniform_size)
+#     except:
+#         font = ImageFont.load_default()
+#
+#
+#     # 遍历绘制
+#     for y in range(0, h, grid_size):
+#         for x in range(0, w, grid_size):
+#             box = arr[y:y+grid_size, x:x+grid_size]
+#             if not box.size:
+#                 continue
+#             color = predominant_color(box)
+#             name = nearest_color(color, palette)
+#             if isinstance(palette[name], tuple):
+#                 fill = palette[name]
+#             else:
+#                 fill = tuple(int(palette[name].lstrip('#')[i:i+2],16) for i in (0,2,4))
+#             draw.rectangle([x, y, x+grid_size, y+grid_size], fill=fill)
+#             brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+#             text_color = (0,0,0) if brightness > 186 else (255,255,255)
+#             bbox = font.getbbox(name)
+#             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+#             tx = x + padding + (avail - tw) / 2
+#             ty = y + padding + (avail - th) / 2
+#             draw.text((tx, ty), name, fill=text_color, font=font)
+#             color_count[name] = color_count.get(name, 0) + 1
+#     return out, color_count, font, padding, avail
+def draw_5x5_grid(mosaic: Image.Image, cell_size: int,
+                  line_color=(200, 200, 200, 200), line_width=2):
+    # 1) 转成 RGBA，保留原图
+    base = mosaic.convert("RGBA")
+    w, h = base.size
+
+    # 2) 新建透明图层叠加网格
+    overlay = Image.new("RGBA", (w, h), (0,0,0,0))
+    draw = ImageDraw.Draw(overlay)
+
+    step = cell_size * 5
+    # 从 x=0,5*cell_size,10*cell_size... 到 w 画竖线
+    for x in range(0, w+1, step):
+        draw.line([(x, 0),(x, h)], fill=line_color, width=line_width)
+    # 同理画横线
+    for y in range(0, h+1, step):
+        draw.line([(0, y),(w, y)], fill=line_color, width=line_width)
+
+    # 3) 合成回 base 并转回原模式
+    result = Image.alpha_composite(base, overlay)
+    return result.convert(mosaic.mode)
+
+def annotate_mapped(
+        mosaic: Image.Image,
+        cell_size: int,
+        rows: int,
+        cols: int,
+        font: ImageFont.FreeTypeFont,
+) -> Image.Image:
+    """
+    在 mosaic 四周各加一圈灰色方格并绘制坐标：
+      - 仅绘制外围边框线
+      - 四周（上/下/左/右）方格内分别写列号和行号
+
+    参数:
+      - mosaic: 中心的马赛克图 (宽 = cols*cell_size，高 = rows*cell_size)
+      - cell_size: 每个方格的边长（像素）
+      - rows: mosaic 的行数
+      - cols: mosaic 的列数
+      - font: 用于写坐标的字体，字号已设为 22pt
+
+    返回:
+      - 扩展了外边框并写好坐标的新版图像
+    """
+    # 新图尺寸：在四周各加一格
+    new_w = (cols + 2) * cell_size
+    new_h = (rows + 2) * cell_size
+
+    # 1) 创建背景（全灰），并把 mosaic 粘贴到正中央
+    annotated = Image.new('RGB', (new_w, new_h), (200, 200, 200))
+    annotated.paste(mosaic, (cell_size, cell_size))
+
     draw = ImageDraw.Draw(annotated)
-    annotated.paste(mosaic, (margin_left, margin_top))
-    # 5×5 淡灰色网格
-    for x in range(0, w+1, grid_size * 5):
-        draw.line([(margin_left + x, margin_top), (margin_left + x, margin_top + h)], fill=(200,200,200), width=1)
-    for y in range(0, h+1, grid_size * 5):
-        draw.line([(margin_left, margin_top + y), (margin_left + w, margin_top + y)], fill=(200,200,200), width=1)
-    # 行坐标
-    for r in range(rows):
-        y = margin_top + r * grid_size + (grid_size - avail) / 2
-        x_pos = (margin_left - padding - tw) / 2
-        draw.text((x_pos, y), str(r), fill=(0,0,0), font=font)
-    # 列坐标
+
+    # 2) 仅绘制外围边框
+    x0, y0 = cell_size, cell_size
+    x1, y1 = x0 + cols*cell_size, y0 + rows*cell_size
+    draw.rectangle([x0, y0, x1, y1], outline=(0,0,0), width=1)
+
+    # 3) 四周写坐标
+    # 顶部列号 0..cols-1
     for c in range(cols):
-        x = margin_left + c * grid_size + (grid_size - avail) / 2
-        y_pos = (margin_top - padding - th) / 2
-        draw.text((x, y_pos), str(c), fill=(0,0,0), font=font)
+        label = str(c)
+        bbox = font.getbbox(label)
+        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        cx = x0 + c*cell_size + (cell_size - tw)/2
+        cy = (cell_size - th)/2
+        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+
+    # 底部列号 0..cols-1
+    for c in range(cols):
+        label = str(c)
+        bbox = font.getbbox(label)
+        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        cx = x0 + c*cell_size + (cell_size - tw)/2
+        cy = y1 + (cell_size - th)/2
+        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+
+    # 左侧行号 0..rows-1
+    for r in range(rows):
+        label = str(r)
+        bbox = font.getbbox(label)
+        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        cx = (cell_size - tw)/2
+        cy = y0 + r*cell_size + (cell_size - th)/2
+        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+
+    # 右侧行号 0..rows-1
+    for r in range(rows):
+        label = str(r)
+        bbox = font.getbbox(label)
+        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
+        cx = x1 + (cell_size - tw)/2
+        cy = y0 + r*cell_size + (cell_size - th)/2
+        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+
     return annotated
 
+# def annotate_mapped(mosaic, grid_size, font, padding, avail):
+#     w, h = mosaic.size
+#     cols = w // grid_size
+#     rows = h // grid_size
+#     bbox = font.getbbox(str(max(rows - 1, cols - 1)))
+#     tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+#     margin_left = tw + padding * 2
+#     margin_top = th + padding * 2
+#     annotated = Image.new('RGB', (margin_left + w, margin_top + h), (200,200,200))
+#     draw = ImageDraw.Draw(annotated)
+#     annotated.paste(mosaic, (margin_left, margin_top))
+#     # 5×5 淡灰色网格
+#     for x in range(0, w+1, grid_size * 5):
+#         draw.line([(margin_left + x, margin_top), (margin_left + x, margin_top + h)], fill=(200,200,200), width=1)
+#     for y in range(0, h+1, grid_size * 5):
+#         draw.line([(margin_left, margin_top + y), (margin_left + w, margin_top + y)], fill=(200,200,200), width=1)
+#     # 行坐标
+#     for r in range(rows):
+#         y = margin_top + r * grid_size + (grid_size - avail) / 2
+#         x_pos = (margin_left - padding - tw) / 2
+#         draw.text((x_pos, y), str(r), fill=(0,0,0), font=font)
+#     # 列坐标
+#     for c in range(cols):
+#         x = margin_left + c * grid_size + (grid_size - avail) / 2
+#         y_pos = (margin_top - padding - th) / 2
+#         draw.text((x, y_pos), str(c), fill=(0,0,0), font=font)
+#     return annotated
 
-def append_legend(mosaic, count, palette, sq=20, pad=5, font_path="arial.ttf", fsize=14, bg=(255,255,255)):
-    temp = Image.new('RGB', (1,1))
+
+# def append_legend(mosaic, count, palette, sq=20, pad=5, font_path=FONT_PATH, fsize=14, bg=(255,255,255)):
+#     temp = Image.new('RGB', (1,1))
+#     td = ImageDraw.Draw(temp)
+#     try:
+#         font_leg = ImageFont.truetype(font_path, fsize)
+#     except:
+#         font_leg = ImageFont.load_default()
+#
+#     items = sorted(count.items(), key=lambda x: -x[1])
+#     block_widths = []
+#     for name, cnt in items:
+#         text = f"{name}: {cnt}"
+#         bw = td.textbbox((0,0), text, font=font_leg)[2]
+#         block_widths.append(sq + pad + bw + pad)
+#     if not block_widths:
+#         return mosaic
+#     cell_w = max(block_widths)
+#     max_w = mosaic.width
+#     cols = max_w // cell_w or 1
+#     thg = td.textbbox((0,0), "Hg", font=font_leg)[3]
+#     line_h = max(sq, thg) + pad
+#     rows = (len(items) + cols - 1) // cols
+#     legend_h = rows * line_h + pad
+#     legend = Image.new('RGB', (max_w, legend_h), bg)
+#     d = ImageDraw.Draw(legend)
+#     r = max(2, sq // 5)
+#     for idx, (name, cnt) in enumerate(items):
+#         row, col = divmod(idx, cols)
+#         x0 = col * cell_w + pad
+#         y0 = row * line_h + pad
+#         color = palette[name] if isinstance(palette[name], tuple) else tuple(
+#             int(palette[name].lstrip('#')[i:i+2],16) for i in (0,2,4)
+#         )
+#         d.rounded_rectangle([x0, y0, x0+sq, y0+sq], radius=r, fill=color, outline=(0,0,0))
+#         text = f"{name}: {cnt}"
+#         txt_h = td.textbbox((0,0), text, font=font_leg)[3]
+#         d.text((x0+sq+pad, y0 + (sq - txt_h)//2), text, fill=(0,0,0), font=font_leg)
+#     final = Image.new('RGB', (mosaic.width, mosaic.height + legend_h), bg)
+#     final.paste(mosaic, (0,0))
+#     final.paste(legend, (0, mosaic.height))
+#     return final
+
+def append_legend(
+    mosaic: Image.Image,
+    count: dict,
+    palette: dict,
+    font_path=FONT_PATH,
+    bg: tuple = (255, 255, 255)
+) -> Image.Image:
+    """
+    在 mosaic 底部追加图例：
+      - 色块边长为 mosaic 高度的 15%
+      - 文字字号与色块边长保持一致
+      - 色块和文字排成若干行列
+
+    参数:
+      - mosaic: PIL.Image 对象
+      - count: {name: 次数}
+      - palette: {name: RGB tuple 或 "#RRGGBB"}
+      - pad: 图例内部元素间距（像素）
+      - font_path: 字体文件路径
+      - bg: 图例背景色
+
+    返回:
+      - 包含图例的新 Image 对象
+    """
+    # 计算色块大小和字体大小
+    h = mosaic.height
+    sq = int(h * 0.02)
+    fsize = sq
+    pad=6
+
+    # 临时画布测文字
+    temp = Image.new('RGB', (1, 1))
     td = ImageDraw.Draw(temp)
     try:
         font_leg = ImageFont.truetype(font_path, fsize)
     except:
         font_leg = ImageFont.load_default()
+
+    # 排序并测每项宽度
     items = sorted(count.items(), key=lambda x: -x[1])
     block_widths = []
     for name, cnt in items:
         text = f"{name}: {cnt}"
-        bw = td.textbbox((0,0), text, font=font_leg)[2]
+        bw = td.textbbox((0, 0), text, font=font_leg)[2]
         block_widths.append(sq + pad + bw + pad)
     if not block_widths:
         return mosaic
+
     cell_w = max(block_widths)
     max_w = mosaic.width
     cols = max_w // cell_w or 1
-    thg = td.textbbox((0,0), "Hg", font=font_leg)[3]
-    line_h = max(sq, thg) + pad
+    # 行高：取色块高度与文字高度中的较大值，再加间距
+    th = td.textbbox((0,0), "Hg", font=font_leg)[3]
+    line_h = max(sq, th) + pad
     rows = (len(items) + cols - 1) // cols
     legend_h = rows * line_h + pad
+
+    # 创建图例画布
     legend = Image.new('RGB', (max_w, legend_h), bg)
     d = ImageDraw.Draw(legend)
     r = max(2, sq // 5)
+
+    # 绘制色块和文字
     for idx, (name, cnt) in enumerate(items):
         row, col = divmod(idx, cols)
         x0 = col * cell_w + pad
         y0 = row * line_h + pad
+        # 解析色值
         color = palette[name] if isinstance(palette[name], tuple) else tuple(
-            int(palette[name].lstrip('#')[i:i+2],16) for i in (0,2,4)
+            int(palette[name].lstrip('#')[i:i+2], 16) for i in (0,2,4)
         )
         d.rounded_rectangle([x0, y0, x0+sq, y0+sq], radius=r, fill=color, outline=(0,0,0))
         text = f"{name}: {cnt}"
-        txt_h = td.textbbox((0,0), text, font=font_leg)[3]
-        d.text((x0+sq+pad, y0 + (sq - txt_h)//2), text, fill=(0,0,0), font=font_leg)
+        txt_h = td.textbbox((0, 0), text, font=font_leg)[3]
+        d.text((x0+sq+pad, y0 + (sq-txt_h)/2), text, fill=(0,0,0), font=font_leg)
+
+    # 合并图例与主图
     final = Image.new('RGB', (mosaic.width, mosaic.height + legend_h), bg)
-    final.paste(mosaic, (0,0))
+    final.paste(mosaic, (0, 0))
     final.paste(legend, (0, mosaic.height))
     return final
+
 
 # ---------- Streamlit 界面 ----------
 st.title("图纸生成")
@@ -268,13 +583,18 @@ if uploaded:
             label_visibility='collapsed',
             on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
         )
+
     gs = st.session_state.grid_size
     st.image(draw_grid_overlay(img, gs), caption=f"网格预览", use_container_width=True)
     if st.button("生成图纸"):
         basic = basic_mosaic(img, gs, palette)
-        mapped, count, font, pad, avail = mapped_mosaic(img, gs, palette)
-        annotated = annotate_mapped(mapped, gs, font, pad, avail)
-        final_img = append_legend(annotated, count, palette)
+        out_img,color_count,font,cell_size,cols,rows = mapped_mosaic(img, gs, palette)
+        out_img = draw_5x5_grid(out_img, cell_size)
+        annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
+
+
+
+        final_img = append_legend(annotated,color_count, palette)
         # 缩放以保证最小格尺寸
         min_cell = 10
         scale = math.ceil(min_cell / gs) if gs < min_cell else 1
@@ -283,5 +603,30 @@ if uploaded:
             final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
         st.subheader("预览")
         st.image(basic, use_container_width=True)
-        st.subheader("图纸")
-        st.image(final_img, use_container_width=True)
+        # st.subheader("图纸")
+        # # st.image(final_img, use_container_width=True)
+        # # arr = np.array(final_img)
+        # # st.image(arr, use_container_width=True)
+        # st.image(final_img, use_container_width=True, output_format='JPEG')
+        st.session_state["final_img"] = final_img
+
+
+    #如果缓存里有，就展示并给下载按钮
+    if "final_img" in st.session_state:
+        st.subheader("图纸（预览）")
+        st.image(
+            st.session_state["final_img"],
+            use_container_width=True
+        )
+
+        # 准备原始大图二进制
+        buf = io.BytesIO()
+        st.session_state["final_img"].save(buf, format="PNG")
+        buf.seek(0)
+
+        st.download_button(
+            label="⬇️ 下载原始大小图纸",
+            data=buf,
+            file_name="图纸_fullsize.png",
+            mime="image/png"
+        )
