@@ -140,7 +140,7 @@ def calculate_cell_size(out_list, font_path=FONT_PATH ):
 
     参数:
         out_list: dict, 键为 (x,y) 或其他任意索引，值为 [color, name, fill]
-        font_path: str, 字体文件路径 (例如 "fonts/cambriaz.ttf")
+        font_path: str, 字体文件路径
 
     返回:
         int, 方格边长 (像素)
@@ -318,72 +318,60 @@ def annotate_mapped(
         cols: int,
         font: ImageFont.FreeTypeFont,
 ) -> Image.Image:
-    """
-    在 mosaic 四周各加一圈灰色方格并绘制坐标：
-      - 仅绘制外围边框线
-      - 四周（上/下/左/右）方格内分别写列号和行号
-
-    参数:
-      - mosaic: 中心的马赛克图 (宽 = cols*cell_size，高 = rows*cell_size)
-      - cell_size: 每个方格的边长（像素）
-      - rows: mosaic 的行数
-      - cols: mosaic 的列数
-      - font: 用于写坐标的字体，字号已设为 22pt
-
-    返回:
-      - 扩展了外边框并写好坐标的新版图像
-    """
-    # 新图尺寸：在四周各加一格
+    # 新图尺寸：原中心图每边各加一格
     new_w = (cols + 2) * cell_size
     new_h = (rows + 2) * cell_size
 
-    # 1) 创建背景（全灰），并把 mosaic 粘贴到正中央
+    # 1) 背景 & 贴中心图
     annotated = Image.new('RGB', (new_w, new_h), (200, 200, 200))
     annotated.paste(mosaic, (cell_size, cell_size))
 
     draw = ImageDraw.Draw(annotated)
 
-    # 2) 仅绘制外围边框
-    x0, y0 = cell_size, cell_size
-    x1, y1 = x0 + cols*cell_size, y0 + rows*cell_size
-    draw.rectangle([x0, y0, x1, y1], outline=(0,0,0), width=1)
+    # 2) 给中心区域每个格子画边框
+    for r in range(rows):
+        for c in range(cols):
+            x0 = (c + 1) * cell_size
+            y0 = (r + 1) * cell_size
+            x1 = x0 + cell_size
+            y1 = y0 + cell_size
+            draw.rectangle([x0, y0, x1, y1], outline=(200,200,200), width=1)
 
-    # 3) 四周写坐标
-    # 顶部列号 0..cols-1
+    # 3) 在四周写坐标
+
+    # 顶部：列号 0..cols-1
     for c in range(cols):
         label = str(c)
-        bbox = font.getbbox(label)
-        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        cx = x0 + c*cell_size + (cell_size - tw)/2
-        cy = (cell_size - th)/2
-        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+        tw, th = font.getbbox(label)[2:]
+        # 该格左上角 x 坐标
+        tx = (c + 1) * cell_size + (cell_size - tw) / 2
+        ty = (cell_size - th) / 2
+        draw.text((tx, ty), label, fill=(0,0,0), font=font)
 
-    # 底部列号 0..cols-1
+    # 底部：列号 0..cols-1
     for c in range(cols):
         label = str(c)
-        bbox = font.getbbox(label)
-        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        cx = x0 + c*cell_size + (cell_size - tw)/2
-        cy = y1 + (cell_size - th)/2
-        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+        tw, th = font.getbbox(label)[2:]
+        tx = (c + 1) * cell_size + (cell_size - tw) / 2
+        # y 在最下方留白区的垂直居中位置
+        ty = (rows + 1) * cell_size + (cell_size - th) / 2
+        draw.text((tx, ty), label, fill=(0,0,0), font=font)
 
-    # 左侧行号 0..rows-1
+    # 左侧：行号 0..rows-1
     for r in range(rows):
         label = str(r)
-        bbox = font.getbbox(label)
-        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        cx = (cell_size - tw)/2
-        cy = y0 + r*cell_size + (cell_size - th)/2
-        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+        tw, th = font.getbbox(label)[2:]
+        tx = (cell_size - tw) / 2
+        ty = (r + 1) * cell_size + (cell_size - th) / 2
+        draw.text((tx, ty), label, fill=(0,0,0), font=font)
 
-    # 右侧行号 0..rows-1
+    # 右侧：行号 0..rows-1
     for r in range(rows):
         label = str(r)
-        bbox = font.getbbox(label)
-        tw, th = bbox[2]-bbox[0], bbox[3]-bbox[1]
-        cx = x1 + (cell_size - tw)/2
-        cy = y0 + r*cell_size + (cell_size - th)/2
-        draw.text((cx, cy), label, fill=(0,0,0), font=font)
+        tw, th = font.getbbox(label)[2:]
+        tx = (cols + 1) * cell_size + (cell_size - tw) / 2
+        ty = (r + 1) * cell_size + (cell_size - th) / 2
+        draw.text((tx, ty), label, fill=(0,0,0), font=font)
 
     return annotated
 
