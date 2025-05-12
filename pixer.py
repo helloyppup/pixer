@@ -1,7 +1,6 @@
 
 import numpy as np
-
-from skimage import color
+from skimage.color import rgb2lab
 
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda x: x.item()
@@ -14,16 +13,9 @@ import pickle
 import math
 import io
 import time
-from colormath.color_objects import sRGBColor, LabColor
-from colormath.color_conversions import convert_color
-from colormath.color_diff import delta_e_cie2000
 
-# 可选：使用 skimage 进行 RGB 到 LAB 转换以提升颜色感知精度
-try:
-    from skimage.color import rgb2lab
-    USE_LAB = True
-except ImportError:
-    USE_LAB = False
+
+
 
 FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "GOTHIC.TTF")
 

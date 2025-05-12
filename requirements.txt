@@ -1,4 +1,4 @@
-streamlit
-Pillow
 numpy
 scikit-image
+streamlit
+Pillow
