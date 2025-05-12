@@ -1,14 +1,22 @@
 
+import numpy as np
+
+from skimage import color
+
+if not hasattr(np, 'asscalar'):
+    np.asscalar = lambda x: x.item()
+
 import streamlit as st
 import json
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
 import os
 import pickle
 import math
 import io
 import time
-
+from colormath.color_objects import sRGBColor, LabColor
+from colormath.color_conversions import convert_color
+from colormath.color_diff import delta_e_cie2000
 
 # 可选：使用 skimage 进行 RGB 到 LAB 转换以提升颜色感知精度
 try:
@@ -34,12 +42,70 @@ def load_palette_from_file(filename='saved_palette.pkl'):
             return pickle.load(f)
     return {}
 
-def load_local_palette():
-    if os.path.exists("palette.json"):
-        with open("palette.json", "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return {item['name']: item['color'] for item in data}
-    return {}
+def load_local_palette(
+    json_path: str = "palette.json",
+    cache_path: str = "palette_lab_cache.json"
+):
+    """
+    加载 palette.json，并缓存一次性计算好的 Lab 数组到 cache_path。
+    返回：
+      palette_dict: {name: "#RRGGBB"}
+      names_list:   [name1, name2, …]
+      lab_arr:      np.ndarray shape (N,3)，对应 names_list 的 Lab 值
+
+    不会修改原来的 palette.json，只会创建/读取 cache_path。
+    """
+    # 如果缓存已经存在，直接读它
+    if os.path.exists(cache_path):
+        with open(cache_path, encoding="utf-8") as f:
+            cache = json.load(f)
+        palette_dict = cache["palette_dict"]
+        names_list   = cache["names_list"]
+        lab_arr      = np.array(cache["lab_arr"], dtype=float)
+        return palette_dict, names_list, lab_arr
+
+    # 否则，先读原始 palette.json
+    if not os.path.exists(json_path):
+        # 没有 JSON 文件就返回空结构
+        return {}, [], np.zeros((0,3), float)
+
+    with open(json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    # 1) 去重，构建 palette_dict
+    palette_dict = {}
+    for item in data:
+        base, hexcol = item["name"], item["color"]
+        name, i = base, 1
+        while name in palette_dict:
+            name = f"{base}_{i}"
+            i += 1
+        palette_dict[name] = hexcol
+
+    # 2) 构建 names_list 和归一化 RGB 数组
+    names_list = list(palette_dict.keys())
+    rgb = []
+    for nm in names_list:
+        hx = palette_dict[nm].lstrip("#")
+        r = int(hx[0:2],16)/255.0
+        g = int(hx[2:4],16)/255.0
+        b = int(hx[4:6],16)/255.0
+        rgb.append((r,g,b))
+    rgb_arr = np.array(rgb, dtype=float)  # shape (N,3)
+
+    # 3) 转到 Lab
+    lab_arr = rgb2lab(rgb_arr[np.newaxis, :, :])[0]  # shape (N,3)
+
+    # 4) 序列化到缓存文件，下次直接用
+    cache = {
+        "palette_dict": palette_dict,
+        "names_list":   names_list,
+        "lab_arr":      lab_arr.tolist()
+    }
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+    return palette_dict, names_list, lab_arr
 
 def load_palette(path_or_file):
     if hasattr(path_or_file, "read"):
@@ -65,16 +131,52 @@ def load_palette(path_or_file):
     return palette
 
 # ---------- 颜色分析函数 ----------
+# def nearest_color(color, palette):
+#     if not palette:
+#         raise ValueError("调色板为空，请上传一个有效的调色板文件。")
+#     if isinstance(color, str):
+#         color = tuple(int(color.lstrip('#')[i:i+2],16) for i in (0,2,4))
+#     distances = {}
+#     for name, pc in palette.items():
+#         pc_rgb = pc if isinstance(pc, tuple) else tuple(int(pc.lstrip('#')[i:i+2],16) for i in (0,2,4))
+#         distances[name] = np.linalg.norm(np.array(color) - np.array(pc_rgb))
+#     return min(distances, key=distances.get)
+
+
 def nearest_color(color, palette):
-    if not palette:
-        raise ValueError("调色板为空，请上传一个有效的调色板文件。")
-    if isinstance(color, str):
-        color = tuple(int(color.lstrip('#')[i:i+2],16) for i in (0,2,4))
-    distances = {}
-    for name, pc in palette.items():
-        pc_rgb = pc if isinstance(pc, tuple) else tuple(int(pc.lstrip('#')[i:i+2],16) for i in (0,2,4))
-        distances[name] = np.linalg.norm(np.array(color) - np.array(pc_rgb))
-    return min(distances, key=distances.get)
+    """
+    在 CIELAB 空间里，用向量化的 CIE76（欧氏距离）找出最接近输入色的调色板名称。
+
+    参数：
+      color: (R,G,B) 三元组，0–255 范围
+      palette: load_local_palette() 返回的三元组
+               (palette_dict, names_list, lab_arr)
+        - palette_dict: {name: "#RRGGBB"}（绘图时用）
+        - names_list:   [name1, name2, …]
+        - lab_arr:      np.ndarray, shape (N,3)，对应 names_list 的 Lab 值
+    返回：
+      最接近输入色的 palette 中的 name（字符串）
+    """
+    palette_dict, names_list, lab_arr = palette
+
+    if lab_arr.size == 0 or not names_list:
+        raise ValueError("调色板为空，请先调用 load_local_palette() 并确认有内容。")
+
+    # 1) 归一化 RGB 到 [0,1]
+    rgb = np.array(color, dtype=float) / 255.0  # shape (3,)
+
+    # 2) 转到 Lab，得到 shape (3,)
+    lab = rgb2lab(rgb[np.newaxis, np.newaxis, :])[0, 0]
+
+    # 3) 向量化 CIE76 距离计算
+    dists = np.linalg.norm(lab_arr - lab, axis=1)
+
+    # 4) 取最小值对应的索引
+    idx = int(dists.argmin())
+
+    return names_list[idx]
+
+
 
 def predominant_max(region):
     pixels = region.reshape(-1,3)
@@ -180,10 +282,15 @@ def basic_mosaic(out_list):
     # return out
 
 
-def get_draw_list(img, grid_size, palette, predominant_color):
+def get_draw_list(img, grid_size, palette_tuple, predominant_color):
+    """
+    palette_tuple 是 load_local_palette() 返回的三元组：
+      (palette_dict, names_list, lab_arr)
+    """
+    palette_dict, names_list, lab_arr = palette_tuple
+
     w, h = img.size
     arr = np.array(img)
-
     out_list = {}
     color_count = {}
 
@@ -196,7 +303,6 @@ def get_draw_list(img, grid_size, palette, predominant_color):
         while x < w:
             x0 = int(x)
             x1 = min(w, int(math.ceil(x + grid_size)))
-
             box = arr[y0:y1, x0:x1]
             if box.size == 0:
                 x += grid_size
@@ -204,10 +310,10 @@ def get_draw_list(img, grid_size, palette, predominant_color):
 
             # 取主色并映射
             color = predominant_color(box)
-            name  = nearest_color(color, palette)
+            name  = nearest_color(color, palette_tuple)
 
-            # 解析填充色
-            val = palette[name]
+            # 解析填充色，一定要从 palette_dict 里拿
+            val = palette_dict[name]
             if isinstance(val, tuple):
                 fill = val
             else:
@@ -216,12 +322,8 @@ def get_draw_list(img, grid_size, palette, predominant_color):
                     for i in (0, 2, 4)
                 )
 
-            # 存入列表
             out_list[(x0, y0)] = [color, name, fill]
-
-            # 对 color_count[name] 自增
             color_count[name] = color_count.get(name, 0) + 1
-
             x += grid_size
         y += grid_size
 
@@ -858,7 +960,7 @@ if uploaded:
             final_img = draw_list(out_list)[0]
             final_img = draw_5x5_grid(final_img, cell_size)
             annotated = annotate_mapped(final_img, cell_size, rows, cols, font)
-            final_img = append_legend(annotated, color_count, palette)
+            final_img = append_legend(annotated, color_count, palette[0])
             elapsed = time.time() - start
             if elapsed > MAX_SECONDS:
                 raise TimeoutError
@@ -868,7 +970,7 @@ if uploaded:
             out_level_img = Level_mapped_mosaic(out_list)[0]
             out_level_img = draw_5x5_grid(out_level_img, cell_size)
             annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
-            level_img = append_legend(annotated, color_count, palette)
+            level_img = append_legend(annotated, color_count, palette[0])
             elapsed = time.time() - start
             if elapsed > MAX_SECONDS:
                 raise TimeoutError
