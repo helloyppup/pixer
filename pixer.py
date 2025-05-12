@@ -232,6 +232,63 @@ def mapped_mosaic(img, grid_size, palette):
 
     return out_img, color_count, font, cell_size,cols, rows
 
+
+def Level_mapped_mosaic(img, grid_size, palette):
+    # 1) 用 draw_list 拆分，得到 {(x,y): [orig_color, name, fill], ...}
+    out_list = draw_list(img, grid_size, palette)
+
+    # 2) 测算每个方格的边长
+    cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
+
+    # 3) 根据 out_list 键自动确定行列数
+    x_coords = sorted({x for (x, y) in out_list.keys()})
+    y_coords = sorted({y for (x, y) in out_list.keys()})
+    cols = len(x_coords)
+    rows = len(y_coords)
+
+    # 4) 建立新画布
+    new_w = cols * cell_size
+    new_h = rows * cell_size
+    out_img = Image.new('RGB', (new_w, new_h))
+    draw = ImageDraw.Draw(out_img)
+
+    # 5) 加载 22 号字体
+    font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+
+
+    # 6) 遍历每个格子，绘制色块＋文字
+    for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
+        # 6.1 原列、行索引
+        col = x_coords.index(orig_x)
+        row = y_coords.index(orig_y)
+
+        # 6.2 水平翻转：新列索引 = (总列数 - 1) - 原列索引
+        flipped_col = (cols - 1) - col
+
+        # 6.3 计算绘制起点
+        x0 = flipped_col * cell_size
+        y0 = row * cell_size
+
+        # 6.4 绘制填充方块
+        draw.rectangle(
+            [x0, y0, x0 + cell_size, y0 + cell_size],
+            fill=fill,
+            outline=None
+        )
+
+        # 6.5 决定并绘制文字
+        brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+        text_color = (0, 0, 0) if brightness > 186 else (255, 255, 255)
+        bbox = font.getbbox(name)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        tx = x0 + (cell_size - tw) / 2
+        ty = y0 + (cell_size - th) / 2
+        draw.text((tx, ty), name, fill=text_color, font=font)
+
+
+    return out_img
+
 # def mapped_mosaic(img, grid_size, palette):
 #     w, h = img.size
 #     arr = np.array(img)
@@ -579,16 +636,20 @@ if uploaded:
         out_img,color_count,font,cell_size,cols,rows = mapped_mosaic(img, gs, palette)
         out_img = draw_5x5_grid(out_img, cell_size)
         annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
-
-
-
         final_img = append_legend(annotated,color_count, palette)
+
+        out_level_img = Level_mapped_mosaic(img, gs, palette)
+        out_level_img = draw_5x5_grid(out_level_img, cell_size)
+        annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
+        level_img = append_legend(annotated, color_count, palette)
+
         # 缩放以保证最小格尺寸
         min_cell = 10
         scale = math.ceil(min_cell / gs) if gs < min_cell else 1
         if scale > 1:
             basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
             final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+            level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
         st.subheader("预览")
         st.image(basic, use_container_width=True)
         # st.subheader("图纸")
@@ -597,6 +658,8 @@ if uploaded:
         # # st.image(arr, use_container_width=True)
         # st.image(final_img, use_container_width=True, output_format='JPEG')
         st.session_state["final_img"] = final_img
+        st.session_state["level_img"] = level_img
+
 
 
     #如果缓存里有，就展示并给下载按钮
@@ -616,5 +679,24 @@ if uploaded:
             label="⬇️ 下载原始大小图纸",
             data=buf,
             file_name="图纸_fullsize.png",
+            mime="image/png"
+        )
+
+    if "level_img" in st.session_state:
+        st.subheader("图纸（水平反转预览）")
+        st.image(
+            st.session_state["level_img"],
+            use_container_width=True
+        )
+
+        # 准备原始大图二进制
+        buf = io.BytesIO()
+        st.session_state["level_img"].save(buf, format="PNG")
+        buf.seek(0)
+
+        st.download_button(
+            label="⬇️ 下载原始大小图纸",
+            data=buf,
+            file_name="水平反转图纸_fullsize.png",
             mime="image/png"
         )
