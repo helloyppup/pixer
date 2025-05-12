@@ -7,6 +7,7 @@ import os
 import pickle
 import math
 import io
+import time
 
 # 可选：使用 skimage 进行 RGB 到 LAB 转换以提升颜色感知精度
 try:
@@ -74,60 +75,155 @@ def nearest_color(color, palette):
         distances[name] = np.linalg.norm(np.array(color) - np.array(pc_rgb))
     return min(distances, key=distances.get)
 
-def predominant_color(region):
-    pixels = region.reshape(-1,3)
-    colors, counts = np.unique(pixels, axis=0, return_counts=True)
-    return tuple(colors[counts.argmax()])
+# def predominant_color(region):
+#     pixels = region.reshape(-1,3)
+#     colors, counts = np.unique(pixels, axis=0, return_counts=True)
+#     return tuple(colors[counts.argmax()])
+
+# 中位数取色
+def predominant_median(region):
+    """
+    对 region 的像素做中位数统计，
+    返回三个通道的中位数作为代表色。
+    """
+    # print("调用")
+    pixels = region.reshape(-1, 3)
+    med = np.median(pixels, axis=0)
+    return tuple(med.astype(int))
+
+def predominant_mean(region):
+    # print("调用平均")
+    pixels = region.reshape(-1, 3)
+    mean = pixels.mean(axis=0)
+    return tuple(mean.astype(int))
+
 
 # ---------- 绘图核心 ----------
+# def draw_grid_overlay(img, grid_size, line_color=(255,0,0,128)):
+#     w, h = img.size
+#     overlay = Image.new('RGBA', (w, h), (0,0,0,0))
+#     draw = ImageDraw.Draw(overlay)
+#     for x in range(0, w, grid_size):
+#         draw.line([(x,0),(x,h)], fill=line_color, width=1)
+#     for y in range(0, h, grid_size):
+#         draw.line([(0,y),(w,y)], fill=line_color, width=1)
+#     return Image.alpha_composite(img.convert('RGBA'), overlay)
 def draw_grid_overlay(img, grid_size, line_color=(255,0,0,128)):
     w, h = img.size
     overlay = Image.new('RGBA', (w, h), (0,0,0,0))
     draw = ImageDraw.Draw(overlay)
-    for x in range(0, w, grid_size):
-        draw.line([(x,0),(x,h)], fill=line_color, width=1)
-    for y in range(0, h, grid_size):
-        draw.line([(0,y),(w,y)], fill=line_color, width=1)
+
+    # 用 while + 浮点累加来画竖线
+    x = 0.0
+    while x < w:
+        draw.line([(x, 0), (x, h)], fill=line_color, width=1)
+        x += grid_size
+
+    y = 0.0
+    while y < h:
+        draw.line([(0, y), (w, y)], fill=line_color, width=1)
+        y += grid_size
+
     return Image.alpha_composite(img.convert('RGBA'), overlay)
 
 
-def basic_mosaic(img, grid_size, palette):
-    w, h = img.size
-    arr = np.array(img)
-    out = Image.new('RGB', (w, h))
-    draw = ImageDraw.Draw(out)
-    for y in range(0, h, grid_size):
-        for x in range(0, w, grid_size):
-            box = arr[y:y+grid_size, x:x+grid_size]
-            if not box.size:
-                continue
-            color = predominant_color(box)
-            name = nearest_color(color, palette)
-            if isinstance(palette[name], tuple):
-                fill = palette[name]
-            else:
-                fill = tuple(int(palette[name].lstrip('#')[i:i+2],16) for i in (0,2,4))
-            draw.rectangle([x, y, x+grid_size, y+grid_size], fill=fill)
-    return out
+def basic_mosaic(out_list):
+    """
+    img: PIL Image
+    grid_size: float 或 int，都支持
+    palette: 名称->颜色映射，颜色可以是 RGB tuple 或 "#RRGGBB" 字符串
+    """
 
-def draw_list(img, grid_size, palette):
+    return  draw_list(out_list,False)
+    # w, h = img.size
+    # arr = np.array(img)
+    # out = Image.new('RGB', (w, h))
+    # draw = ImageDraw.Draw(out)
+    #
+    # y = 0.0
+    # while y < h:
+    #     x = 0.0
+    #     # 计算这一行真正要裁切的 y 范围
+    #     y0 = int(y)
+    #     y1 = min(h, int(math.ceil(y + grid_size)))
+    #
+    #     while x < w:
+    #         x0 = int(x)
+    #         x1 = min(w, int(math.ceil(x + grid_size)))
+    #
+    #         # 裁切当前块
+    #         box = arr[y0:y1, x0:x1]
+    #         if box.size == 0:
+    #             x += grid_size
+    #             continue
+    #
+    #         # 取主色、映射到调色板
+    #         color = predominant_color(box)
+    #         name  = nearest_color(color, palette)
+    #
+    #         # 解析填充值
+    #         val = palette[name]
+    #         if isinstance(val, tuple):
+    #             fill = val
+    #         else:
+    #             fill = tuple(int(val.lstrip('#')[i:i+2], 16)
+    #                          for i in (0, 2, 4))
+    #
+    #         # 用整数坐标绘制矩形
+    #         draw.rectangle([x0, y0, x1, y1], fill=fill)
+    #
+    #         x += grid_size
+    #     y += grid_size
+    #
+    # return out
+
+
+def get_draw_list(img, grid_size, palette, predominant_color):
     w, h = img.size
     arr = np.array(img)
+
     out_list = {}
-    for y in range(0, h, grid_size):
-        for x in range(0, w, grid_size):
-            box = arr[y:y + grid_size, x:x + grid_size]
-            if not box.size:
-                continue
-            color = predominant_color(box)
-            name = nearest_color(color, palette)
-            if isinstance(palette[name], tuple):
-                fill = palette[name]
-            else:
-                fill = tuple(int(palette[name].lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
-            out_list[(x, y)] = [color, name, fill]
-    return out_list
+    color_count = {}
 
+    y = 0.0
+    while y < h:
+        x = 0.0
+        y0 = int(y)
+        y1 = min(h, int(math.ceil(y + grid_size)))
+
+        while x < w:
+            x0 = int(x)
+            x1 = min(w, int(math.ceil(x + grid_size)))
+
+            box = arr[y0:y1, x0:x1]
+            if box.size == 0:
+                x += grid_size
+                continue
+
+            # 取主色并映射
+            color = predominant_color(box)
+            name  = nearest_color(color, palette)
+
+            # 解析填充色
+            val = palette[name]
+            if isinstance(val, tuple):
+                fill = val
+            else:
+                fill = tuple(
+                    int(val.lstrip('#')[i:i+2], 16)
+                    for i in (0, 2, 4)
+                )
+
+            # 存入列表
+            out_list[(x0, y0)] = [color, name, fill]
+
+            # 对 color_count[name] 自增
+            color_count[name] = color_count.get(name, 0) + 1
+
+            x += grid_size
+        y += grid_size
+
+    return out_list, color_count
 
 
 def calculate_cell_size(out_list, font_path=FONT_PATH ):
@@ -176,35 +272,34 @@ def calculate_cell_size(out_list, font_path=FONT_PATH ):
     return cell_size
 
 
-def mapped_mosaic(img, grid_size, palette):
-    # 1) 用 draw_list 拆分，得到 {(x,y): [orig_color, name, fill], ...}
-    out_list = draw_list(img, grid_size, palette)
-
-    # 2) 测算每个方格的边长
+def draw_list(out_list,isIndex=True,isLevel=False):
+    # 测算每个方格的边长
     cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
 
-    # 3) 根据 out_list 键自动确定行列数
+    #  根据 out_list 键自动确定行列数
     x_coords = sorted({x for (x, y) in out_list.keys()})
     y_coords = sorted({y for (x, y) in out_list.keys()})
     cols = len(x_coords)
     rows = len(y_coords)
 
-    # 4) 建立新画布
+    #  建立新画布
     new_w = cols * cell_size
     new_h = rows * cell_size
     out_img = Image.new('RGB', (new_w, new_h))
     draw = ImageDraw.Draw(out_img)
 
-    # 5) 加载 22 号字体
+    # 加载 22 号字体
     font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
-
-    color_count = {}
 
     # 6) 遍历每个格子，绘制色块＋文字
     for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
         # 计算在新画布上的行列索引
         col = x_coords.index(orig_x)
         row = y_coords.index(orig_y)
+
+        if isLevel:
+            col=(cols-1)-col
+
         x0 = col * cell_size
         y0 = row * cell_size
 
@@ -215,79 +310,136 @@ def mapped_mosaic(img, grid_size, palette):
             outline=None
         )
 
-        # 6.2 决定文字颜色（明亮用黑，暗色用白）
-        brightness = fill[0]*0.299 + fill[1]*0.587 + fill[2]*0.114
-        text_color = (0,0,0) if brightness > 186 else (255,255,255)
-
-        # 6.3 测量文字尺寸，居中绘制
-        bbox = font.getbbox(name)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        tx = x0 + (cell_size - tw) / 2
-        ty = y0 + (cell_size - th) / 2
-        draw.text((tx, ty), name, fill=text_color, font=font)
-
-        # 6.4 更新计数
-        color_count[name] = color_count.get(name, 0) + 1
-
-    return out_img, color_count, font, cell_size,cols, rows
 
 
-def Level_mapped_mosaic(img, grid_size, palette):
+        if isIndex:
+            #决定文字颜色（明亮用黑，暗色用白）
+            brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+            text_color = (0, 0, 0) if brightness > 186 else (255, 255, 255)
+
+            #测量文字尺寸，居中绘制
+            bbox = font.getbbox(name)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            tx = x0 + (cell_size - tw) / 2
+            ty = y0 + (cell_size - th) / 2
+            draw.text((tx, ty), name, fill=text_color, font=font)
+
+    return  out_img,cell_size,rows,cols,font
+
+
+def mapped_mosaic(out_list):
     # 1) 用 draw_list 拆分，得到 {(x,y): [orig_color, name, fill], ...}
-    out_list = draw_list(img, grid_size, palette)
+    # out_list = draw_list(img, grid_size, palette,predominant_color)
 
-    # 2) 测算每个方格的边长
-    cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
+    # # 2) 测算每个方格的边长
+    # cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
+    #
+    # # 3) 根据 out_list 键自动确定行列数
+    # x_coords = sorted({x for (x, y) in out_list.keys()})
+    # y_coords = sorted({y for (x, y) in out_list.keys()})
+    # cols = len(x_coords)
+    # rows = len(y_coords)
+    #
+    # # 4) 建立新画布
+    # new_w = cols * cell_size
+    # new_h = rows * cell_size
+    # out_img = Image.new('RGB', (new_w, new_h))
+    # draw = ImageDraw.Draw(out_img)
+    #
+    # # 5) 加载 22 号字体
+    # font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    #
+    # color_count = {}
+    #
+    # # 6) 遍历每个格子，绘制色块＋文字
+    # for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
+    #     # 计算在新画布上的行列索引
+    #     col = x_coords.index(orig_x)
+    #     row = y_coords.index(orig_y)
+    #     x0 = col * cell_size
+    #     y0 = row * cell_size
+    #
+    #     # 6.1 绘制填充方块
+    #     draw.rectangle(
+    #         [x0, y0, x0 + cell_size, y0 + cell_size],
+    #         fill=fill,
+    #         outline=None
+    #     )
+    #
+    #     # 6.2 决定文字颜色（明亮用黑，暗色用白）
+    #     brightness = fill[0]*0.299 + fill[1]*0.587 + fill[2]*0.114
+    #     text_color = (0,0,0) if brightness > 186 else (255,255,255)
+    #
+    #     # 6.3 测量文字尺寸，居中绘制
+    #     bbox = font.getbbox(name)
+    #     tw = bbox[2] - bbox[0]
+    #     th = bbox[3] - bbox[1]
+    #     tx = x0 + (cell_size - tw) / 2
+    #     ty = y0 + (cell_size - th) / 2
+    #     draw.text((tx, ty), name, fill=text_color, font=font)
+    #
+    #     # 6.4 更新计数
+    #     color_count[name] = color_count.get(name, 0) + 1
+    return draw_list(out_list)
+    # return out_img, color_count, font, cell_size,cols, rows
 
-    # 3) 根据 out_list 键自动确定行列数
-    x_coords = sorted({x for (x, y) in out_list.keys()})
-    y_coords = sorted({y for (x, y) in out_list.keys()})
-    cols = len(x_coords)
-    rows = len(y_coords)
 
-    # 4) 建立新画布
-    new_w = cols * cell_size
-    new_h = rows * cell_size
-    out_img = Image.new('RGB', (new_w, new_h))
-    draw = ImageDraw.Draw(out_img)
+def Level_mapped_mosaic(out_list):
+    # # 1) 用 draw_list 拆分，得到 {(x,y): [orig_color, name, fill], ...}
+    # # out_list = draw_list(img, grid_size, palette,,predominant_color)
+    #
+    # # 2) 测算每个方格的边长
+    # cell_size = calculate_cell_size(out_list, font_path=FONT_PATH)
+    #
+    # # 3) 根据 out_list 键自动确定行列数
+    # x_coords = sorted({x for (x, y) in out_list.keys()})
+    # y_coords = sorted({y for (x, y) in out_list.keys()})
+    # cols = len(x_coords)
+    # rows = len(y_coords)
+    #
+    # # 4) 建立新画布
+    # new_w = cols * cell_size
+    # new_h = rows * cell_size
+    # out_img = Image.new('RGB', (new_w, new_h))
+    # draw = ImageDraw.Draw(out_img)
+    #
+    # # 5) 加载 22 号字体
+    # font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
+    #
+    #
+    # # 6) 遍历每个格子，绘制色块＋文字
+    # for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
+    #     # 6.1 原列、行索引
+    #     col = x_coords.index(orig_x)
+    #     row = y_coords.index(orig_y)
+    #
+    #     # 6.2 水平翻转：新列索引 = (总列数 - 1) - 原列索引
+    #     flipped_col = (cols - 1) - col
+    #
+    #     # 6.3 计算绘制起点
+    #     x0 = flipped_col * cell_size
+    #     y0 = row * cell_size
+    #
+    #     # 6.4 绘制填充方块
+    #     draw.rectangle(
+    #         [x0, y0, x0 + cell_size, y0 + cell_size],
+    #         fill=fill,
+    #         outline=None
+    #     )
+    #
+    #     # 6.5 决定并绘制文字
+    #     brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+    #     text_color = (0, 0, 0) if brightness > 186 else (255, 255, 255)
+    #     bbox = font.getbbox(name)
+    #     tw = bbox[2] - bbox[0]
+    #     th = bbox[3] - bbox[1]
+    #     tx = x0 + (cell_size - tw) / 2
+    #     ty = y0 + (cell_size - th) / 2
+    #     draw.text((tx, ty), name, fill=text_color, font=font)
 
-    # 5) 加载 22 号字体
-    font = ImageFont.truetype(FONT_PATH, FONT_SIZE)
 
-
-    # 6) 遍历每个格子，绘制色块＋文字
-    for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
-        # 6.1 原列、行索引
-        col = x_coords.index(orig_x)
-        row = y_coords.index(orig_y)
-
-        # 6.2 水平翻转：新列索引 = (总列数 - 1) - 原列索引
-        flipped_col = (cols - 1) - col
-
-        # 6.3 计算绘制起点
-        x0 = flipped_col * cell_size
-        y0 = row * cell_size
-
-        # 6.4 绘制填充方块
-        draw.rectangle(
-            [x0, y0, x0 + cell_size, y0 + cell_size],
-            fill=fill,
-            outline=None
-        )
-
-        # 6.5 决定并绘制文字
-        brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
-        text_color = (0, 0, 0) if brightness > 186 else (255, 255, 255)
-        bbox = font.getbbox(name)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        tx = x0 + (cell_size - tw) / 2
-        ty = y0 + (cell_size - th) / 2
-        draw.text((tx, ty), name, fill=text_color, font=font)
-
-
-    return out_img
+    return draw_list(out_list,isLevel=True)
 
 # def mapped_mosaic(img, grid_size, palette):
 #     w, h = img.size
@@ -347,7 +499,7 @@ def Level_mapped_mosaic(img, grid_size, palette):
 #             color_count[name] = color_count.get(name, 0) + 1
 #     return out, color_count, font, padding, avail
 def draw_5x5_grid(mosaic: Image.Image, cell_size: int,
-                  line_color=(200, 200, 200, 200), line_width=2):
+                  line_color=(200, 200, 200, 200), line_width=4):
     # 1) 转成 RGBA，保留原图
     base = mosaic.convert("RGBA")
     w, h = base.size
@@ -607,38 +759,58 @@ else:
 if uploaded:
     img = Image.open(uploaded).convert('RGB')
     st.markdown("#### 调整网格大小")
+
+    method = st.radio(
+        "选取主色算法",
+        ("中位数:像素图推荐使用", "平均值:非像素图推荐使用"),
+        index=0,
+        key="color_method",
+        horizontal = True
+    )
+
+    if st.session_state.color_method.startswith("中位数"):
+        predominant_color = predominant_median
+    else:
+        predominant_color = predominant_mean
+
     col1, col2 = st.columns([8, 2])
+    # 右侧精确输入
     with col2:
         st.number_input(
             "",
-            min_value=1,
-            value=st.session_state.grid_size,
-            step=1,
+            min_value=1.0,
+            value=float(st.session_state.grid_size),
+            step=0.01,
+            format="%.2f",
             key='num_in',
             label_visibility='hidden',
             on_change=lambda: st.session_state.update(grid_size=st.session_state.num_in)
         )
+
+    # 左侧滑块
     with col1:
         st.slider(
             "",
-            min_value=1,
-            max_value=min(img.size) // 3,
-            value=st.session_state.grid_size,
+            min_value=1.0,
+            max_value=float(min(img.size) // 3),
+            value=float(st.session_state.grid_size),
+            step=0.01,
+            format="%.2f",
             key='slider',
             label_visibility='collapsed',
             on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
         )
-
     gs = st.session_state.grid_size
     st.image(draw_grid_overlay(img, gs), caption=f"网格预览", use_container_width=True)
     if st.button("生成图纸"):
-        basic = basic_mosaic(img, gs, palette)
-        out_img,color_count,font,cell_size,cols,rows = mapped_mosaic(img, gs, palette)
+        out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
+        basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
+        out_img = draw_list(out_list)[0]
         out_img = draw_5x5_grid(out_img, cell_size)
         annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
         final_img = append_legend(annotated,color_count, palette)
 
-        out_level_img = Level_mapped_mosaic(img, gs, palette)
+        out_level_img = Level_mapped_mosaic(out_list)[0]
         out_level_img = draw_5x5_grid(out_level_img, cell_size)
         annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
         level_img = append_legend(annotated, color_count, palette)
@@ -678,7 +850,7 @@ if uploaded:
         st.download_button(
             label="⬇️ 下载原始大小图纸",
             data=buf,
-            file_name="图纸_fullsize.png",
+            file_name=f"图纸_fullsize{time.time()}.png",
             mime="image/png"
         )
 
@@ -697,6 +869,6 @@ if uploaded:
         st.download_button(
             label="⬇️ 下载原始大小图纸",
             data=buf,
-            file_name="水平反转图纸_fullsize.png",
+            file_name=f"水平反转图纸_fullsize{time.time()}.png",
             mime="image/png"
         )
