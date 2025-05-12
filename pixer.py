@@ -9,6 +9,7 @@ import math
 import io
 import time
 
+
 # 可选：使用 skimage 进行 RGB 到 LAB 转换以提升颜色感知精度
 try:
     from skimage.color import rgb2lab
@@ -75,10 +76,10 @@ def nearest_color(color, palette):
         distances[name] = np.linalg.norm(np.array(color) - np.array(pc_rgb))
     return min(distances, key=distances.get)
 
-# def predominant_color(region):
-#     pixels = region.reshape(-1,3)
-#     colors, counts = np.unique(pixels, axis=0, return_counts=True)
-#     return tuple(colors[counts.argmax()])
+def predominant_max(region):
+    pixels = region.reshape(-1,3)
+    colors, counts = np.unique(pixels, axis=0, return_counts=True)
+    return tuple(colors[counts.argmax()])
 
 # 中位数取色
 def predominant_median(region):
@@ -108,6 +109,7 @@ def predominant_mean(region):
 #     for y in range(0, h, grid_size):
 #         draw.line([(0,y),(w,y)], fill=line_color, width=1)
 #     return Image.alpha_composite(img.convert('RGBA'), overlay)
+
 def draw_grid_overlay(img, grid_size, line_color=(255,0,0,128)):
     w, h = img.size
     overlay = Image.new('RGBA', (w, h), (0,0,0,0))
@@ -746,7 +748,7 @@ def init():
 if 'grid_size' not in st.session_state:
     init()
 local_palette = load_local_palette()
-palette_file = st.file_uploader("上传调色板 JSON", type=['json'])
+palette_file = st.file_uploader("上传调色板 JSON（不选择则采取默认值 mard：221）", type=['json'])
 if palette_file:
     try:
         palette = load_palette(palette_file)
@@ -762,7 +764,7 @@ if uploaded:
 
     method = st.radio(
         "选取主色算法",
-        ("中位数:像素图推荐使用", "平均值:非像素图推荐使用"),
+        ("中位数:像素图推荐使用", "最大值:像素图，且图片质量较好时推荐使用","平均值:非像素图推荐使用"),
         index=0,
         key="color_method",
         horizontal = True
@@ -770,6 +772,8 @@ if uploaded:
 
     if st.session_state.color_method.startswith("中位数"):
         predominant_color = predominant_median
+    elif st.session_state.color_method.startswith("最大值"):
+        predominant_color = predominant_max
     else:
         predominant_color = predominant_mean
 
@@ -797,41 +801,105 @@ if uploaded:
             step=0.01,
             format="%.2f",
             key='slider',
-            label_visibility='collapsed',
+            label_visibility='hidden',
             on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
         )
     gs = st.session_state.grid_size
     st.image(draw_grid_overlay(img, gs), caption=f"网格预览", use_container_width=True)
+
+    #     out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
+    #     basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
+    #     out_img = draw_list(out_list)[0]
+    #     out_img = draw_5x5_grid(out_img, cell_size)
+    #     annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
+    #     final_img = append_legend(annotated,color_count, palette)
+    #
+    #     out_level_img = Level_mapped_mosaic(out_list)[0]
+    #     out_level_img = draw_5x5_grid(out_level_img, cell_size)
+    #     annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
+    #     level_img = append_legend(annotated, color_count, palette)
+    #
+    #     # 缩放以保证最小格尺寸
+    #     min_cell = 10
+    #     scale = math.ceil(min_cell / gs) if gs < min_cell else 1
+    #     if scale > 1:
+    #         basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
+    #         final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+    #         level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+    #     st.subheader("预览")
+    #     st.image(basic, use_container_width=True)
+    #     # st.subheader("图纸")
+    #     # # st.image(final_img, use_container_width=True)
+    #     # # arr = np.array(final_img)
+    #     # # st.image(arr, use_container_width=True)
+    #     # st.image(final_img, use_container_width=True, output_format='JPEG')
+    #     st.session_state["final_img"] = final_img
+    #     st.session_state["level_img"] = level_img
     if st.button("生成图纸"):
-        out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
-        basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
-        out_img = draw_list(out_list)[0]
-        out_img = draw_5x5_grid(out_img, cell_size)
-        annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
-        final_img = append_legend(annotated,color_count, palette)
+        try:
+            progress = st.progress(0)
+            start=time.time()
+            MAX_SECONDS=40
+            # 步骤 1：分块并统计
+            out_list, color_count = get_draw_list(img, gs, palette, predominant_color)
+            elapsed = time.time() - start
+            if elapsed > MAX_SECONDS:
+                raise TimeoutError
+            progress.progress(20)
 
-        out_level_img = Level_mapped_mosaic(out_list)[0]
-        out_level_img = draw_5x5_grid(out_level_img, cell_size)
-        annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
-        level_img = append_legend(annotated, color_count, palette)
+            # 步骤 2：基本马赛克
+            basic, cell_size, rows, cols, font = draw_list(out_list, isIndex=False)
+            elapsed = time.time() - start
+            if elapsed > MAX_SECONDS:
+                raise TimeoutError
+            progress.progress(40)
 
-        # 缩放以保证最小格尺寸
-        min_cell = 10
-        scale = math.ceil(min_cell / gs) if gs < min_cell else 1
-        if scale > 1:
-            basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
-            final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
-            level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
-        st.subheader("预览")
-        st.image(basic, use_container_width=True)
-        # st.subheader("图纸")
-        # # st.image(final_img, use_container_width=True)
-        # # arr = np.array(final_img)
-        # # st.image(arr, use_container_width=True)
-        # st.image(final_img, use_container_width=True, output_format='JPEG')
-        st.session_state["final_img"] = final_img
-        st.session_state["level_img"] = level_img
+            # 步骤 3：生成图纸并注释
+            final_img = draw_list(out_list)[0]
+            final_img = draw_5x5_grid(final_img, cell_size)
+            annotated = annotate_mapped(final_img, cell_size, rows, cols, font)
+            final_img = append_legend(annotated, color_count, palette)
+            elapsed = time.time() - start
+            if elapsed > MAX_SECONDS:
+                raise TimeoutError
+            progress.progress(60)
 
+            # 步骤 4：生成反转
+            out_level_img = Level_mapped_mosaic(out_list)[0]
+            out_level_img = draw_5x5_grid(out_level_img, cell_size)
+            annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
+            level_img = append_legend(annotated, color_count, palette)
+            elapsed = time.time() - start
+            if elapsed > MAX_SECONDS:
+                raise TimeoutError
+            progress.progress(80)
+
+            # 步骤 5：尺寸调整
+            min_cell = 10
+            scale = math.ceil(min_cell / gs) if gs < min_cell else 1
+            if scale > 1:
+                basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
+                final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+                level_img = level_img.resize((level_img.width * scale, level_img.height * scale), Image.NEAREST)
+            elapsed = time.time() - start
+            if elapsed > MAX_SECONDS:
+                raise TimeoutError
+            progress.progress(100)
+
+        except TimeoutError:
+            st.error(f"⚠️ 处理已超过 {MAX_SECONDS} 秒，像素格数量可能过多，建议调大网格大小后再试。")
+        else:
+            # 成功完成
+            st.success("✅ 生成完毕")
+            st.subheader("预览")
+            st.image(basic, use_container_width=True)
+            # st.subheader("图纸")
+            # # st.image(final_img, use_container_width=True)
+            # # arr = np.array(final_img)
+            # # st.image(arr, use_container_width=True)
+            # st.image(final_img, use_container_width=True, output_format='JPEG')
+            st.session_state["final_img"] = final_img
+            st.session_state["level_img"] = level_img
 
 
     #如果缓存里有，就展示并给下载按钮
