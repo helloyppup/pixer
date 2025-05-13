@@ -1,6 +1,12 @@
 
 import numpy as np
 from skimage.color import rgb2lab
+from colormath.color_objects import LabColor
+from colormath.color_diff import delta_e_cie2000
+import cv2
+
+
+
 
 if not hasattr(np, 'asscalar'):
     np.asscalar = lambda x: x.item()
@@ -34,6 +40,53 @@ def load_palette_from_file(filename='saved_palette.pkl'):
             return pickle.load(f)
     return {}
 
+def srgb_to_linear(rgb):
+    # sRGB逆Gamma校正
+    linear = np.where(rgb <= 0.04045,
+                      rgb / 12.92,
+                      ((rgb + 0.055) / 1.055) ** 2.4)
+    return linear
+
+def color_to_lab(data:dict,cache_path: str):
+    # 步骤1: 生成palette_dict（原有逻辑不变）
+    palette_dict = {}
+    for item in data:
+        base, hexcol = item["name"], item["color"]
+        name, i = base, 1
+        while name in palette_dict:
+            name = f"{base}_{i}"
+            i += 1
+        palette_dict[name] = hexcol
+
+    # 步骤2: 构建names_list和归一化RGB数组（添加Gamma校正）
+    names_list = list(palette_dict.keys())
+    rgb = []
+    for nm in names_list:
+        hx = palette_dict[nm].lstrip("#")
+        r = int(hx[0:2], 16) / 255.0
+        g = int(hx[2:4], 16) / 255.0
+        b = int(hx[4:6], 16) / 255.0
+        rgb.append((r, g, b))
+    rgb_arr = np.array(rgb, dtype=float)
+
+    rgb_linear = srgb_to_linear(rgb_arr)
+
+    # 步骤3: 转换到Lab空间
+    lab_arr = rgb2lab(rgb_linear[np.newaxis, :, :])[0]
+
+    # 4) 序列化到缓存文件，下次直接用
+    cache = {
+        "palette_dict": palette_dict,
+        "names_list": names_list,
+        "lab_arr": lab_arr.tolist()
+    }
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+
+    palette_labs = [LabColor(*row) for row in lab_arr]
+
+    return palette_dict, names_list, palette_labs
+
 def load_local_palette(
     json_path: str = "palette.json",
     cache_path: str = "palette_lab_cache.json"
@@ -64,40 +117,7 @@ def load_local_palette(
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
 
-    # 1) 去重，构建 palette_dict
-    palette_dict = {}
-    for item in data:
-        base, hexcol = item["name"], item["color"]
-        name, i = base, 1
-        while name in palette_dict:
-            name = f"{base}_{i}"
-            i += 1
-        palette_dict[name] = hexcol
-
-    # 2) 构建 names_list 和归一化 RGB 数组
-    names_list = list(palette_dict.keys())
-    rgb = []
-    for nm in names_list:
-        hx = palette_dict[nm].lstrip("#")
-        r = int(hx[0:2],16)/255.0
-        g = int(hx[2:4],16)/255.0
-        b = int(hx[4:6],16)/255.0
-        rgb.append((r,g,b))
-    rgb_arr = np.array(rgb, dtype=float)  # shape (N,3)
-
-    # 3) 转到 Lab
-    lab_arr = rgb2lab(rgb_arr[np.newaxis, :, :])[0]  # shape (N,3)
-
-    # 4) 序列化到缓存文件，下次直接用
-    cache = {
-        "palette_dict": palette_dict,
-        "names_list":   names_list,
-        "lab_arr":      lab_arr.tolist()
-    }
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
-
-    return palette_dict, names_list, lab_arr
+    return color_to_lab(data,cache_path)
 
 def load_palette(path_or_file):
     if hasattr(path_or_file, "read"):
@@ -136,35 +156,21 @@ def load_palette(path_or_file):
 
 
 def nearest_color(color, palette):
-    """
-    在 CIELAB 空间里，用向量化的 CIE76（欧氏距离）找出最接近输入色的调色板名称。
-
-    参数：
-      color: (R,G,B) 三元组，0–255 范围
-      palette: load_local_palette() 返回的三元组
-               (palette_dict, names_list, lab_arr)
-        - palette_dict: {name: "#RRGGBB"}（绘图时用）
-        - names_list:   [name1, name2, …]
-        - lab_arr:      np.ndarray, shape (N,3)，对应 names_list 的 Lab 值
-    返回：
-      最接近输入色的 palette 中的 name（字符串）
-    """
     palette_dict, names_list, lab_arr = palette
 
-    if lab_arr.size == 0 or not names_list:
-        raise ValueError("调色板为空，请先调用 load_local_palette() 并确认有内容。")
+    # 1) 输入颜色 Gamma 校正
+    rgb = np.array(color, dtype=float) / 255.0
+    rgb_linear = srgb_to_linear(rgb)  # 确保此函数已定义（参考前文）
+    lab = rgb2lab(rgb_linear[np.newaxis, np.newaxis, :])[0, 0]
 
-    # 1) 归一化 RGB 到 [0,1]
-    rgb = np.array(color, dtype=float) / 255.0  # shape (3,)
+    # 2) 预转换调色板 Lab 数组为 LabColor 对象（提前优化）
+    # 注意：此步骤应在调色板加载时完成，而非每次调用时！
+    # palette_labs = [LabColor(*row) for row in lab_arr]  # 提前预处理
 
-    # 2) 转到 Lab，得到 shape (3,)
-    lab = rgb2lab(rgb[np.newaxis, np.newaxis, :])[0, 0]
-
-    # 3) 向量化 CIE76 距离计算
-    dists = np.linalg.norm(lab_arr - lab, axis=1)
-
-    # 4) 取最小值对应的索引
-    idx = int(dists.argmin())
+    # 3) 计算 CIEDE2000 距离
+    input_lab = LabColor(lab[0], lab[1], lab[2])
+    dists = [delta_e_cie2000(input_lab, p_lab) for p_lab in lab_arr]
+    idx = np.argmin(dists)
 
     return names_list[idx]
 
@@ -185,6 +191,7 @@ def predominant_median(region):
     pixels = region.reshape(-1, 3)
     med = np.median(pixels, axis=0)
     return tuple(med.astype(int))
+
 
 def predominant_mean(region):
     # print("调用平均")
@@ -279,7 +286,7 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color):
     palette_tuple 是 load_local_palette() 返回的三元组：
       (palette_dict, names_list, lab_arr)
     """
-    palette_dict, names_list, lab_arr = palette_tuple
+    palette_dict, names_list, _= palette_tuple
 
     w, h = img.size
     arr = np.array(img)
@@ -853,7 +860,21 @@ else:
     palette = local_palette
 
 if uploaded:
+    with st.sidebar:
+        st.header("降噪参数")
+        d = st.slider("邻域直径 (d)", 5, 15, 9, help="值越大越模糊")
+        sigmaColor = st.slider("颜色融合度", 30, 120, 60)
+        sigmaSpace = st.slider("空间融合度", 30, 120, 60)
+
     img = Image.open(uploaded).convert('RGB')
+    img_np = np.array(img)[:, :, ::-1]
+
+    denoised_img_np = cv2.bilateralFilter(img_np, d=d, sigmaColor=sigmaColor, sigmaSpace=sigmaSpace)
+    denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
+
+    st.image(denoised_img, caption="降噪结果", use_column_width=True)  # 显示预览
+
+
     st.markdown("#### 调整网格大小")
 
     method = st.radio(
@@ -935,7 +956,7 @@ if uploaded:
             start=time.time()
             MAX_SECONDS=40
             # 步骤 1：分块并统计
-            out_list, color_count = get_draw_list(img, gs, palette, predominant_color)
+            out_list, color_count = get_draw_list(denoised_img, gs, palette, predominant_color)
             elapsed = time.time() - start
             if elapsed > MAX_SECONDS:
                 raise TimeoutError
