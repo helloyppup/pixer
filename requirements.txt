@@ -2,4 +2,4 @@ numpy
 scikit-image
 Pillow
 colormath
-opencv-python
+opencv-python-headless

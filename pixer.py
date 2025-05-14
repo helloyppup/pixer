@@ -1,6 +1,6 @@
 
 import numpy as np
-from scipy.spatial import cKDTree
+# from scipy.spatial import cKDTree
 from skimage.color import rgb2lab, deltaE_ciede2000
 from colormath.color_objects import LabColor
 from colormath.color_diff import delta_e_cie2000
