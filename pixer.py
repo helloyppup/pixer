@@ -1,6 +1,7 @@
 
 import numpy as np
-from skimage.color import rgb2lab
+from scipy.spatial import cKDTree
+from skimage.color import rgb2lab, deltaE_ciede2000
 from colormath.color_objects import LabColor
 from colormath.color_diff import delta_e_cie2000
 import cv2
@@ -71,21 +72,36 @@ def color_to_lab(data:dict,cache_path: str):
 
     rgb_linear = srgb_to_linear(rgb_arr)
 
+
+
     # 步骤3: 转换到Lab空间
     lab_arr = rgb2lab(rgb_linear[np.newaxis, :, :])[0]
+
+    palette_rgb = []
+    for name in names_list:
+        val = palette_dict[name]
+        if isinstance(val, tuple):  # 已经是 (r,g,b)
+            rgb = val
+        else:  # 形如 "#RRGGBB"
+            hexv = val.lstrip('#')
+            rgb = tuple(int(hexv[i:i + 2], 16) for i in (0, 2, 4))
+        palette_rgb.append(rgb)
 
     # 4) 序列化到缓存文件，下次直接用
     cache = {
         "palette_dict": palette_dict,
         "names_list": names_list,
-        "lab_arr": lab_arr.tolist()
+        "lab_arr": lab_arr.tolist(),
+        "palette_rgb":palette_rgb
     }
     with open(cache_path, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
-    palette_labs = [LabColor(*row) for row in lab_arr]
+    # palette_labs = [LabColor(*row) for row in lab_arr]
 
-    return palette_dict, names_list, palette_labs
+    # print(f"palette_labs类型 {type(palette_labs)}")
+
+    return palette_dict, names_list, palette_rgb
 
 def load_local_palette(
     json_path: str = "palette.json",
@@ -106,8 +122,12 @@ def load_local_palette(
             cache = json.load(f)
         palette_dict = cache["palette_dict"]
         names_list   = cache["names_list"]
+        palette_rgb = cache["palette_rgb"]
         lab_arr      = np.array(cache["lab_arr"], dtype=float)
-        return palette_dict, names_list, lab_arr
+
+
+        # palette_labs = [LabColor(*row) for row in lab_arr]
+        return palette_dict, names_list,palette_rgb
 
     # 否则，先读原始 palette.json
     if not os.path.exists(json_path):
@@ -156,7 +176,10 @@ def load_palette(path_or_file):
 
 
 def nearest_color(color, palette):
+    print(time.time())
     palette_dict, names_list, lab_arr = palette
+
+    # print(f"类型{type(lab_arr)}")
 
     # 1) 输入颜色 Gamma 校正
     rgb = np.array(color, dtype=float) / 255.0
@@ -180,6 +203,27 @@ def predominant_max(region):
     pixels = region.reshape(-1,3)
     colors, counts = np.unique(pixels, axis=0, return_counts=True)
     return tuple(colors[counts.argmax()])
+
+# def quantized_mode(region, q=2):
+#     # q: 量化步长，比如 16 会让 0-255 落到 0,16,32,…,240
+#     pixels = region.reshape(-1,3)
+#     # 先量化
+#     q_pixels = (pixels // q) * q
+#     colors, counts = np.unique(q_pixels, axis=0, return_counts=True)
+#     return tuple(colors[counts.argmax()])
+
+def quantized_mode(region, q1=32, q2=4, top_m=5):
+    pixels = region.reshape(-1,3)
+    # 第一阶段
+    buckets1 = (pixels // q1) * q1
+    keys1, cnt1 = np.unique(buckets1, axis=0, return_counts=True)
+    top_idxs = cnt1.argsort()[-top_m:]
+    mask = np.isin((buckets1.reshape(-1,1,3) == keys1[top_idxs]).all(-1).any(-1), True)
+    # 第二阶段只在 top_m 像素中再量化
+    sub = pixels[mask]
+    buckets2 = (sub // q2) * q2
+    keys2, cnt2 = np.unique(buckets2, axis=0, return_counts=True)
+    return tuple(keys2[cnt2.argmax()])
 
 # 中位数取色
 def predominant_median(region):
@@ -281,52 +325,135 @@ def basic_mosaic(out_list):
     # return out
 
 
-def get_draw_list(img, grid_size, palette_tuple, predominant_color):
-    """
-    palette_tuple 是 load_local_palette() 返回的三元组：
-      (palette_dict, names_list, lab_arr)
-    """
-    palette_dict, names_list, _= palette_tuple
 
+def build_color_mapping(colors, palette_rgb, palette_names, k=20):
+    """
+    把一组 RGB 颜色映射到最贴近人眼的调色板。
+
+    参数
+    ----
+    colors : (N,3) array-like, 值域 0-255
+    palette_rgb : (M,3) array-like, 值域 0-255，对应 palette_names
+    palette_names : list of str, 长度 M
+    k : int, 粗筛候选数（默认 20，视 palette 大小可调）
+
+    返回
+    ----
+    mapping : dict, (R,G,B) -> (name, (r,g,b))
+    """
+    # 1) 用 skimage 统一把 palette 和 输入都转换到同一 Lab 空间
+    #    注意：skimage.rgb2lab 输入需要 float [0,1]
+    palette_arr = np.array(palette_rgb, dtype=float) / 255.0
+    palette_lab = rgb2lab(palette_arr.reshape(-1,1,3)).reshape(-1,3)
+
+    colors_arr = np.array(colors, dtype=float) / 255.0
+    colors_lab = rgb2lab(colors_arr.reshape(-1,1,3)).reshape(-1,3)
+
+    # 2) 建 kd-tree，粗筛 ΔE*76 最近的 k 个
+    from scipy.spatial import cKDTree
+    tree = cKDTree(palette_lab)
+    _, idxs = tree.query(colors_lab, k=k)
+
+    # 3) 精筛：用 ΔE00 在这 k 个候选里找最小
+    mapping = {}
+    for orig_rgb, lab_vec, neigh in zip(colors, colors_lab, idxs):
+        # 如果 k==1，neigh 可能是一维标量，包成列表
+        neigh = np.atleast_1d(neigh)
+        # 计算这 k 个候选的 ΔE2000
+        # skimage.color.deltaE_ciede2000 接收形状相同的 array
+        lab_in = np.tile(lab_vec, (len(neigh),1))
+        lab_cand = palette_lab[neigh]
+        de2000 = deltaE_ciede2000(lab_in[np.newaxis,:,:], lab_cand[np.newaxis,:,:])
+        # deltaE 返回形状 (1,k)，取最小
+        best = np.argmin(de2000[0])
+        sel_idx = neigh[best]
+
+        name = palette_names[sel_idx]
+        fill_rgb = tuple(int(x) for x in palette_rgb[sel_idx])
+        mapping[tuple(int(x) for x in orig_rgb)] = (name, fill_rgb)
+
+    return mapping
+
+
+
+def get_draw_list(img, grid_size, palette_tuple, predominant_color):
     w, h = img.size
     arr = np.array(img)
-    out_list = {}
-    color_count = {}
 
+    # 1) 先遍历收集所有主色和坐标
+    coords, colors = [], []
     y = 0.0
     while y < h:
+        y0, y1 = int(y), min(h, int(math.ceil(y + grid_size)))
         x = 0.0
-        y0 = int(y)
-        y1 = min(h, int(math.ceil(y + grid_size)))
-
         while x < w:
-            x0 = int(x)
-            x1 = min(w, int(math.ceil(x + grid_size)))
+            x0, x1 = int(x), min(w, int(math.ceil(x + grid_size)))
             box = arr[y0:y1, x0:x1]
-            if box.size == 0:
-                x += grid_size
-                continue
-
-            # 取主色并映射
-            color = predominant_color(box)
-            name  = nearest_color(color, palette_tuple)
-
-            # 解析填充色，一定要从 palette_dict 里拿
-            val = palette_dict[name]
-            if isinstance(val, tuple):
-                fill = val
-            else:
-                fill = tuple(
-                    int(val.lstrip('#')[i:i+2], 16)
-                    for i in (0, 2, 4)
-                )
-
-            out_list[(x0, y0)] = [color, name, fill]
-            color_count[name] = color_count.get(name, 0) + 1
+            if box.size:
+                coords.append((x0, y0))
+                colors.append(tuple(predominant_color(box)))
             x += grid_size
         y += grid_size
 
+    # 2) 批量去重＋映射
+    _,name_list,palette_rgb=  palette_tuple
+    mapping = build_color_mapping(colors, palette_rgb,name_list)
+
+    # 3) 最终填充 out_list 和 color_count
+    out_list, color_count = {}, {}
+    for coord, col in zip(coords, colors):
+        name, fill = mapping[col]
+        out_list[coord] = [col, name, fill]
+        color_count[name] = color_count.get(name, 0) + 1
+
     return out_list, color_count
+
+# def get_draw_list(img, grid_size, palette_tuple, predominant_color):
+#     """
+#     palette_tuple 是 load_local_palette() 返回的三元组：
+#       (palette_dict, names_list, lab_arr)
+#     """
+#     palette_dict, names_list, arr_lab= palette_tuple
+#
+#     w, h = img.size
+#     arr = np.array(img)
+#     out_list = {}
+#     color_count = {}
+#
+#     y = 0.0
+#     while y < h:
+#         x = 0.0
+#         y0 = int(y)
+#         y1 = min(h, int(math.ceil(y + grid_size)))
+#
+#         while x < w:
+#             x0 = int(x)
+#             x1 = min(w, int(math.ceil(x + grid_size)))
+#             box = arr[y0:y1, x0:x1]
+#             if box.size == 0:
+#                 x += grid_size
+#                 continue
+#
+#             # 取主色并映射
+#             color = predominant_color(box)
+#             name  = nearest_color(color, palette_tuple)
+#
+#             # 解析填充色，一定要从 palette_dict 里拿
+#             val = palette_dict[name]
+#             if isinstance(val, tuple):
+#                 fill = val
+#             else:
+#                 fill = tuple(
+#                     int(val.lstrip('#')[i:i+2], 16)
+#                     for i in (0, 2, 4)
+#                 )
+#
+#             out_list[(x0, y0)] = [color, name, fill]
+#             color_count[name] = color_count.get(name, 0) + 1
+#             x += grid_size
+#         y += grid_size
+#
+#     return out_list, color_count
 
 
 def calculate_cell_size(out_list, font_path=FONT_PATH ):
@@ -862,9 +989,9 @@ else:
 if uploaded:
     with st.sidebar:
         st.header("降噪参数")
-        d = st.slider("邻域直径 (d)", 5, 15, 9, help="值越大越模糊")
-        sigmaColor = st.slider("颜色融合度", 30, 120, 60)
-        sigmaSpace = st.slider("空间融合度", 30, 120, 60)
+        d = st.slider("邻域直径 (d)", 0, 15, 0, help="值越大越模糊")
+        sigmaColor = st.slider("颜色融合度", 0, 120, 0)
+        sigmaSpace = st.slider("空间融合度", 0, 120, 0)
 
     img = Image.open(uploaded).convert('RGB')
     img_np = np.array(img)[:, :, ::-1]
@@ -872,23 +999,30 @@ if uploaded:
     denoised_img_np = cv2.bilateralFilter(img_np, d=d, sigmaColor=sigmaColor, sigmaSpace=sigmaSpace)
     denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
 
-    st.image(denoised_img, caption="降噪结果", use_column_width=True)  # 显示预览
+    col1, col2 = st.columns([5, 5])
+    with col1:
+        st.image(img, caption="原图", use_column_width=True)
+    with col2:
+        st.image(denoised_img, caption="降噪结果", use_column_width=True)  # 显示预览
 
 
     st.markdown("#### 调整网格大小")
 
     method = st.radio(
         "选取主色算法",
-        ("中位数:像素图推荐使用", "最大值:像素图，且图片质量较好时推荐使用","平均值:非像素图推荐使用"),
+        ("中位数:像素图推荐使用", "最大值:像素图，且图片质量较好时推荐使用","量化众数","平均值:非像素图推荐使用"),
         index=0,
         key="color_method",
-        horizontal = True
+        horizontal = True,
+        help="像素图不要选择最后一个"
     )
 
     if st.session_state.color_method.startswith("中位数"):
         predominant_color = predominant_median
     elif st.session_state.color_method.startswith("最大值"):
         predominant_color = predominant_max
+    elif st.session_state.color_method.startswith("量化众数"):
+        predominant_color = quantized_mode
     else:
         predominant_color = predominant_mean
 
@@ -920,7 +1054,7 @@ if uploaded:
             on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
         )
     gs = st.session_state.grid_size
-    st.image(draw_grid_overlay(img, gs), caption=f"网格预览", use_container_width=True)
+    st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_column_width=True)
 
     #     out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
     #     basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
@@ -942,20 +1076,21 @@ if uploaded:
     #         final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
     #         level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
     #     st.subheader("预览")
-    #     st.image(basic, use_container_width=True)
+    #     st.image(basic, use_column_width=True)
     #     # st.subheader("图纸")
-    #     # # st.image(final_img, use_container_width=True)
+    #     # # st.image(final_img, use_column_width=True)
     #     # # arr = np.array(final_img)
-    #     # # st.image(arr, use_container_width=True)
-    #     # st.image(final_img, use_container_width=True, output_format='JPEG')
+    #     # # st.image(arr, use_column_width=True)
+    #     # st.image(final_img, use_column_width=True, output_format='JPEG')
     #     st.session_state["final_img"] = final_img
     #     st.session_state["level_img"] = level_img
     if st.button("生成图纸"):
         try:
             progress = st.progress(0)
             start=time.time()
-            MAX_SECONDS=40
+            MAX_SECONDS=60
             # 步骤 1：分块并统计
+            # print(type(palette[-1]))
             out_list, color_count = get_draw_list(denoised_img, gs, palette, predominant_color)
             elapsed = time.time() - start
             if elapsed > MAX_SECONDS:
@@ -1007,12 +1142,12 @@ if uploaded:
             # 成功完成
             st.success("✅ 生成完毕")
             st.subheader("预览")
-            st.image(basic, use_container_width=True)
+            st.image(basic, use_column_width=True)
             # st.subheader("图纸")
-            # # st.image(final_img, use_container_width=True)
+            # # st.image(final_img, use_column_width=True)
             # # arr = np.array(final_img)
-            # # st.image(arr, use_container_width=True)
-            # st.image(final_img, use_container_width=True, output_format='JPEG')
+            # # st.image(arr, use_column_width=True)
+            # st.image(final_img, use_column_width=True, output_format='JPEG')
             st.session_state["final_img"] = final_img
             st.session_state["level_img"] = level_img
 
@@ -1022,7 +1157,7 @@ if uploaded:
         st.subheader("图纸（预览）")
         st.image(
             st.session_state["final_img"],
-            use_container_width=True
+            use_column_width=True
         )
 
         # 准备原始大图二进制
@@ -1041,7 +1176,7 @@ if uploaded:
         st.subheader("图纸（水平反转预览）")
         st.image(
             st.session_state["level_img"],
-            use_container_width=True
+            use_column_width=True
         )
 
         # 准备原始大图二进制
