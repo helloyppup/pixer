@@ -1001,9 +1001,9 @@ if uploaded:
 
     col1, col2 = st.columns([5, 5])
     with col1:
-        st.image(img, caption="原图", use_column_width=True)
+        st.image(img, caption="原图", use_container_width=True)
     with col2:
-        st.image(denoised_img, caption="降噪结果", use_column_width=True)  # 显示预览
+        st.image(denoised_img, caption="降噪结果", use_container_width=True)  # 显示预览
 
 
     st.markdown("#### 调整网格大小")
@@ -1054,7 +1054,7 @@ if uploaded:
             on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
         )
     gs = st.session_state.grid_size
-    st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_column_width=True)
+    st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True)
 
     #     out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
     #     basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
@@ -1076,12 +1076,12 @@ if uploaded:
     #         final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
     #         level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
     #     st.subheader("预览")
-    #     st.image(basic, use_column_width=True)
+    #     st.image(basic, use_container_width=True)
     #     # st.subheader("图纸")
-    #     # # st.image(final_img, use_column_width=True)
+    #     # # st.image(final_img, use_container_width=True)
     #     # # arr = np.array(final_img)
-    #     # # st.image(arr, use_column_width=True)
-    #     # st.image(final_img, use_column_width=True, output_format='JPEG')
+    #     # # st.image(arr, use_container_width=True)
+    #     # st.image(final_img, use_container_width=True, output_format='JPEG')
     #     st.session_state["final_img"] = final_img
     #     st.session_state["level_img"] = level_img
     if st.button("生成图纸"):
@@ -1142,12 +1142,12 @@ if uploaded:
             # 成功完成
             st.success("✅ 生成完毕")
             st.subheader("预览")
-            st.image(basic, use_column_width=True)
+            st.image(basic, use_container_width=True)
             # st.subheader("图纸")
-            # # st.image(final_img, use_column_width=True)
+            # # st.image(final_img, use_container_width=True)
             # # arr = np.array(final_img)
-            # # st.image(arr, use_column_width=True)
-            # st.image(final_img, use_column_width=True, output_format='JPEG')
+            # # st.image(arr, use_container_width=True)
+            # st.image(final_img, use_container_width=True, output_format='JPEG')
             st.session_state["final_img"] = final_img
             st.session_state["level_img"] = level_img
 
@@ -1157,7 +1157,7 @@ if uploaded:
         st.subheader("图纸（预览）")
         st.image(
             st.session_state["final_img"],
-            use_column_width=True
+            use_container_width=True
         )
 
         # 准备原始大图二进制
@@ -1176,7 +1176,7 @@ if uploaded:
         st.subheader("图纸（水平反转预览）")
         st.image(
             st.session_state["level_img"],
-            use_column_width=True
+            use_container_width=True
         )
 
         # 准备原始大图二进制
