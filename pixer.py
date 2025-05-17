@@ -212,18 +212,73 @@ def predominant_max(region):
 #     colors, counts = np.unique(q_pixels, axis=0, return_counts=True)
 #     return tuple(colors[counts.argmax()])
 
-def quantized_mode(region, q1=32, q2=4, top_m=5):
-    pixels = region.reshape(-1,3)
-    # 第一阶段
+def quantized_mode(region, q1=32, q2=4, top_m=5, noise_frac=0.01):
+    """
+        两阶段量化 + 众数 + 噪声剔除主色提取
+
+        参数
+        ----
+        region : ndarray, shape (H, W, 3)
+            输入图像区域，dtype 通常为 uint8，RGB 通道值 0–255。
+        q1 : int
+            第一阶段量化步长（粗量化），建议 16–64。
+        q2 : int
+            第二阶段量化步长（细量化），建议 2–8。
+        top_m : int
+            第一阶段保留的主色桶数（从高到低选取前 top_m 个桶）。
+        noise_frac : float
+            噪声阈值（小于 region 像素总数 * noise_frac 的桶将被当作噪声剔除）。
+
+        返回
+        ----
+        color : tuple of int
+            最终提取的主色 RGB 三元组。
+        """
+    # 展平到 (N,3)
+    pixels = region.reshape(-1, 3)
+    total = pixels.shape[0]
+    if total == 0:
+        raise ValueError("Empty region provided to quantized_mode_robust.")
+
+    # 第一阶段：粗量化
     buckets1 = (pixels // q1) * q1
     keys1, cnt1 = np.unique(buckets1, axis=0, return_counts=True)
-    top_idxs = cnt1.argsort()[-top_m:]
-    mask = np.isin((buckets1.reshape(-1,1,3) == keys1[top_idxs]).all(-1).any(-1), True)
-    # 第二阶段只在 top_m 像素中再量化
+
+    # 噪声剔除
+    keep_mask = cnt1 > total * noise_frac
+    if not np.any(keep_mask):
+        # 如果所有桶都被剔除，则退回保留所有出现过的桶
+        keep_mask = cnt1 > 0
+    keys1_filt = keys1[keep_mask]
+    cnt1_filt = cnt1[keep_mask]
+
+    # 选取出现次数最多的 top_m 个桶
+    m = min(top_m, cnt1_filt.size)
+    top_idxs = cnt1_filt.argsort()[-m:]
+    chosen_buckets = keys1_filt[top_idxs]
+
+    # 第二阶段：在 top_m 桶对应的像素里再细量化
+    # 构造 mask：像素量化后的值属于 chosen_buckets
+    mask = (buckets1[:, None, :] == chosen_buckets[None, :, :]).all(axis=2).any(axis=1)
     sub = pixels[mask]
+
+    # 对 sub 再做细量化并计数
     buckets2 = (sub // q2) * q2
     keys2, cnt2 = np.unique(buckets2, axis=0, return_counts=True)
-    return tuple(keys2[cnt2.argmax()])
+
+    # 兜底：如果没有任何候选（极端情况），退回均值色
+    if cnt2.size == 0:
+        mean = np.mean(pixels, axis=0)
+        best = np.atleast_1d(mean.astype(int))
+        return tuple(best.tolist())
+
+    # 选出第二阶段出现次数最多的桶
+    best_idx = cnt2.argmax()
+    best = keys2[best_idx]
+
+    # 确保 best 是一维可迭代
+    best = np.atleast_1d(best).astype(int)
+    return tuple(best.tolist())
 
 # 中位数取色
 def predominant_median(region):
@@ -376,28 +431,47 @@ def build_color_mapping(colors, palette_rgb, palette_names, k=20):
 
 
 
-def get_draw_list(img, grid_size, palette_tuple, predominant_color):
+def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
     w, h = img.size
+    cols = math.ceil(w / grid_size)
+    rows = math.ceil(h / grid_size)
     arr = np.array(img)
 
-    # 1) 先遍历收集所有主色和坐标
     coords, colors = [], []
-    y = 0.0
-    while y < h:
-        y0, y1 = int(y), min(h, int(math.ceil(y + grid_size)))
-        x = 0.0
-        while x < w:
-            x0, x1 = int(x), min(w, int(math.ceil(x + grid_size)))
-            box = arr[y0:y1, x0:x1]
-            if box.size:
-                coords.append((x0, y0))
-                colors.append(tuple(predominant_color(box)))
-            x += grid_size
-        y += grid_size
+
+
+    margin_frac = 0.3
+    inset = int(grid_size * margin_frac)
+
+    for j in range(rows):
+        y0 = int(round(j * grid_size))
+        y1 = int(round(min(h, (j + 1) * grid_size)))
+        for i in range(cols):
+            x0 = int(round(i * grid_size))
+            x1 = int(round(min(w, (i + 1) * grid_size)))
+
+            # 先取整格
+            full_box = arr[y0:y1, x0:x1]
+            if full_box.size == 0:
+                continue
+
+            # 计算内缩后的子区域坐标
+            xi0, yi0 = x0 + inset, y0 + inset
+            xi1, yi1 = x1 - inset, y1 - inset
+            # 如果内缩后有效面积足够，否则用整格
+            if xi1 > xi0 and yi1 > yi0:
+                sub = arr[yi0:yi1, xi0:xi1]
+            else:
+                sub = full_box
+
+            # 主色提取仍然调用 predominant_color，只是传 sub 而不是 full_box
+            coords.append((x0, y0))
+            c = tuple(predominant_color(sub))
+            colors.append(c)
 
     # 2) 批量去重＋映射
-    _,name_list,palette_rgb=  palette_tuple
-    mapping = build_color_mapping(colors, palette_rgb,name_list)
+    _, name_list, palette_rgb = palette_tuple
+    mapping = build_color_mapping(colors, palette_rgb, name_list)
 
     # 3) 最终填充 out_list 和 color_count
     out_list, color_count = {}, {}
@@ -911,7 +985,7 @@ def append_legend(
     """
     # 计算色块大小和字体大小
     h = mosaic.height
-    sq = int(h * 0.02)
+    sq = int(h * 0.03)
     fsize = sq
     pad=6
 
@@ -999,11 +1073,8 @@ if uploaded:
     denoised_img_np = cv2.bilateralFilter(img_np, d=d, sigmaColor=sigmaColor, sigmaSpace=sigmaSpace)
     denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
 
-    col1, col2 = st.columns([5, 5])
-    with col1:
-        st.image(img, caption="原图", use_container_width=True)
-    with col2:
-        st.image(denoised_img, caption="降噪结果", use_container_width=True)  # 显示预览
+    st.image(denoised_img, caption="降噪图", use_container_width=True)
+
 
 
     st.markdown("#### 调整网格大小")
@@ -1124,6 +1195,9 @@ if uploaded:
                 raise TimeoutError
             progress.progress(80)
 
+            # test = draw_list(out_list, isIndex=False)[0]
+            # st.image(test, caption=f"采样测试", use_container_width=True)
+
             # 步骤 5：尺寸调整
             min_cell = 10
             scale = math.ceil(min_cell / gs) if gs < min_cell else 1
@@ -1131,6 +1205,7 @@ if uploaded:
                 basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
                 final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
                 level_img = level_img.resize((level_img.width * scale, level_img.height * scale), Image.NEAREST)
+                # test_img=test.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
             elapsed = time.time() - start
             if elapsed > MAX_SECONDS:
                 raise TimeoutError
