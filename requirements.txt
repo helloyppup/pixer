@@ -1,5 +1,7 @@
 numpy
 scikit-image
 Pillow
+scipy
+streamlit
 colormath
 opencv-python-headless

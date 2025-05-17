@@ -1,12 +1,14 @@
 
+
 import numpy as np
+from scipy.spatial import cKDTree
+
 # from scipy.spatial import cKDTree
 from skimage.color import rgb2lab, deltaE_ciede2000
+from skimage import restoration, io as skio
 from colormath.color_objects import LabColor
 from colormath.color_diff import delta_e_cie2000
 import cv2
-
-
 
 
 if not hasattr(np, 'asscalar'):
@@ -21,6 +23,9 @@ import math
 import io
 import time
 
+from collections import defaultdict
+
+
 
 
 
@@ -30,11 +35,19 @@ Image.MAX_IMAGE_PIXELS = 10**9
 
 FONT_SIZE=22
 
+KL=0.5
+KC=1.5
+KH=1.5
+L_THRESH=70
+A_THRESH=45
+B_THRESH=45
+
 # ---------- 调色板加载与持久化 ----------
 def save_palette_to_file(palette, filename='saved_palette.pkl'):
     with open(filename, 'wb') as f:
         pickle.dump(palette, f)
 
+# 后续优化按照色号去选
 def load_palette_from_file(filename='saved_palette.pkl'):
     if os.path.exists(filename):
         with open(filename, 'rb') as f:
@@ -48,8 +61,14 @@ def srgb_to_linear(rgb):
                       ((rgb + 0.055) / 1.055) ** 2.4)
     return linear
 
-def color_to_lab(data:dict,cache_path: str):
+def color_to_lab(data:dict,cache_path: str=None):
     # 步骤1: 生成palette_dict（原有逻辑不变）
+    """
+
+    :param data:
+    :param cache_path:
+    :return:
+    """
     palette_dict = {}
     for item in data:
         base, hexcol = item["name"], item["color"]
@@ -87,15 +106,20 @@ def color_to_lab(data:dict,cache_path: str):
             rgb = tuple(int(hexv[i:i + 2], 16) for i in (0, 2, 4))
         palette_rgb.append(rgb)
 
-    # 4) 序列化到缓存文件，下次直接用
-    cache = {
-        "palette_dict": palette_dict,
-        "names_list": names_list,
-        "lab_arr": lab_arr.tolist(),
-        "palette_rgb":palette_rgb
-    }
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(cache, f, ensure_ascii=False, indent=2)
+    # 非色板文件不需要写文件
+    if cache_path:
+
+        # 4) 序列化到缓存文件，下次直接用
+        cache = {
+            "palette_dict": palette_dict,
+            "names_list": names_list,
+            "lab_arr": lab_arr.tolist(),
+            "palette_rgb":palette_rgb
+        }
+
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
 
     # palette_labs = [LabColor(*row) for row in lab_arr]
 
@@ -381,54 +405,107 @@ def basic_mosaic(out_list):
 
 
 
+# def build_color_mapping(colors, palette_rgb, palette_names, k=20):
+#     """
+#     把一组 RGB 颜色映射到最贴近人眼的调色板。
+#
+#     参数
+#     ----
+#     colors : (N,3) array-like, 值域 0-255
+#     palette_rgb : (M,3) array-like, 值域 0-255，对应 palette_names
+#     palette_names : list of str, 长度 M
+#     k : int, 粗筛候选数（默认 20，视 palette 大小可调）
+#
+#     返回
+#     ----
+#     mapping : dict, (R,G,B) -> (name, (r,g,b))
+#     """
+#     # 1) 用 skimage 统一把 palette 和 输入都转换到同一 Lab 空间
+#     #    注意：skimage.rgb2lab 输入需要 float [0,1]
+#     palette_arr = np.array(palette_rgb, dtype=float) / 255.0
+#     palette_lab = rgb2lab(palette_arr.reshape(-1,1,3)).reshape(-1,3)
+#
+#     colors_arr = np.array(colors, dtype=float) / 255.0
+#     colors_lab = rgb2lab(colors_arr.reshape(-1,1,3)).reshape(-1,3)
+#
+#     # 2) 建 kd-tree，粗筛 ΔE*76 最近的 k 个
+#     from scipy.spatial import cKDTree
+#     tree = cKDTree(palette_lab)
+#     _, idxs = tree.query(colors_lab, k=k)
+#
+#     # 3) 精筛：用 ΔE00 在这 k 个候选里找最小
+#     mapping = {}
+#     for orig_rgb, lab_vec, neigh in zip(colors, colors_lab, idxs):
+#         # 如果 k==1，neigh 可能是一维标量，包成列表
+#         neigh = np.atleast_1d(neigh)
+#         # 计算这 k 个候选的 ΔE2000
+#         # skimage.color.deltaE_ciede2000 接收形状相同的 array
+#         lab_in = np.tile(lab_vec, (len(neigh),1))
+#         lab_cand = palette_lab[neigh]
+#         de2000 = deltaE_ciede2000(lab_in[np.newaxis,:,:], lab_cand[np.newaxis,:,:])
+#         # deltaE 返回形状 (1,k)，取最小
+#         best = np.argmin(de2000[0])
+#         sel_idx = neigh[best]
+#
+#         name = palette_names[sel_idx]
+#         fill_rgb = tuple(int(x) for x in palette_rgb[sel_idx])
+#         mapping[tuple(int(x) for x in orig_rgb)] = (name, fill_rgb)
+#
+#     return mapping
+
+
 def build_color_mapping(colors, palette_rgb, palette_names, k=20):
     """
-    把一组 RGB 颜色映射到最贴近人眼的调色板。
+    将一组 Lab 颜色映射到最接近的调色板颜色。
 
     参数
     ----
-    colors : (N,3) array-like, 值域 0-255
-    palette_rgb : (M,3) array-like, 值域 0-255，对应 palette_names
+    colors : (N,3) array-like, Lab 颜色值
+    palette_rgb : (M,3) array-like, RGB 值域 0-255，对应 palette_names
     palette_names : list of str, 长度 M
-    k : int, 粗筛候选数（默认 20，视 palette 大小可调）
+    k : int, 粗筛候选数（默认 20）
 
     返回
     ----
-    mapping : dict, (R,G,B) -> (name, (r,g,b))
+    mapping : dict, (L,a,b) -> (name, (r,g,b))
     """
-    # 1) 用 skimage 统一把 palette 和 输入都转换到同一 Lab 空间
-    #    注意：skimage.rgb2lab 输入需要 float [0,1]
+    # 转换调色板到 Lab 空间
     palette_arr = np.array(palette_rgb, dtype=float) / 255.0
-    palette_lab = rgb2lab(palette_arr.reshape(-1,1,3)).reshape(-1,3)
+    palette_lab = rgb2lab(palette_arr.reshape(-1, 1, 3)).reshape(-1, 3)
 
-    colors_arr = np.array(colors, dtype=float) / 255.0
-    colors_lab = rgb2lab(colors_arr.reshape(-1,1,3)).reshape(-1,3)
+    # 处理输入的 Lab 颜色
+    colors_lab = np.array(colors, dtype=float).reshape(-1, 3)
 
-    # 2) 建 kd-tree，粗筛 ΔE*76 最近的 k 个
-    from scipy.spatial import cKDTree
+    # 构建 KD 树进行粗筛
     tree = cKDTree(palette_lab)
     _, idxs = tree.query(colors_lab, k=k)
 
-    # 3) 精筛：用 ΔE00 在这 k 个候选里找最小
     mapping = {}
-    for orig_rgb, lab_vec, neigh in zip(colors, colors_lab, idxs):
-        # 如果 k==1，neigh 可能是一维标量，包成列表
-        neigh = np.atleast_1d(neigh)
-        # 计算这 k 个候选的 ΔE2000
-        # skimage.color.deltaE_ciede2000 接收形状相同的 array
-        lab_in = np.tile(lab_vec, (len(neigh),1))
-        lab_cand = palette_lab[neigh]
-        de2000 = deltaE_ciede2000(lab_in[np.newaxis,:,:], lab_cand[np.newaxis,:,:])
-        # deltaE 返回形状 (1,k)，取最小
-        best = np.argmin(de2000[0])
-        sel_idx = neigh[best]
+    for orig_lab, lab_vec, neigh in zip(colors, colors_lab, idxs):
+        # 将原始 Lab 转换为浮点元组作为键
+        key = tuple(float(x) for x in orig_lab)
 
+        # 处理候选索引
+        neigh = np.atleast_1d(neigh)
+        lab_in = np.tile(lab_vec, (len(neigh), 1))
+        lab_cand = palette_lab[neigh]
+
+        # 计算 ΔE2000 并找到最优候选
+        de2000 = deltaE_ciede2000(lab_in[np.newaxis, :, :], lab_cand[np.newaxis, :, :],kL=KL,
+                                  kC=KC,
+                                  kH=KH)
+        best_idx = np.argmin(de2000[0])
+        sel_idx = neigh[best_idx]
+
+        # 获取对应的调色板名称和 RGB
         name = palette_names[sel_idx]
-        fill_rgb = tuple(int(x) for x in palette_rgb[sel_idx])
-        mapping[tuple(int(x) for x in orig_rgb)] = (name, fill_rgb)
+        fill_rgb = tuple(map(int, palette_rgb[sel_idx]))
+        mapping[key] = (name, fill_rgb)
 
     return mapping
 
+
+# def get_clolor():
 
 
 def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
@@ -440,7 +517,7 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
     coords, colors = [], []
 
 
-    margin_frac = 0.3
+    margin_frac = 0.2
     inset = int(grid_size * margin_frac)
 
     for j in range(rows):
@@ -469,18 +546,83 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
             c = tuple(predominant_color(sub))
             colors.append(c)
 
+    # 1.5) 去相近色
+    # 映射到lab空间
+    colors_arr = np.array(colors, dtype=float) / 255.0
+    colors_lab = rgb2lab(colors_arr.reshape(-1, 1, 3)).reshape(-1, 3)
+    colors=merge_similar_colors(colors_lab)  #lab
+
     # 2) 批量去重＋映射
     _, name_list, palette_rgb = palette_tuple
     mapping = build_color_mapping(colors, palette_rgb, name_list)
 
+
+    # print(print(type(colors[0])))
+    # print(coords)
+
+
     # 3) 最终填充 out_list 和 color_count
     out_list, color_count = {}, {}
-    for coord, col in zip(coords, colors):
+    for coord,col in zip(coords, colors):
+        print(f"coord is {coord}  {type(coord)}\n")
+        print(f"col is {col}  {type(col) }\n")
+
         name, fill = mapping[col]
         out_list[coord] = [col, name, fill]
         color_count[name] = color_count.get(name, 0) + 1
 
     return out_list, color_count
+
+
+def merge_similar_colors(lab_colors, l_thresh=L_THRESH, a_thresh=A_THRESH, b_thresh=B_THRESH):
+    n = len(lab_colors)
+    processed = np.zeros(n, dtype=bool)
+    result = np.zeros_like(lab_colors)
+
+    # 哈希分桶优化查找速度（各通道按阈值分桶）
+    bucket_map = defaultdict(list)
+    for i, (L, a, b) in enumerate(lab_colors):
+        bucket_key = (int(L // l_thresh), int(a // a_thresh), int(b // b_thresh))
+        bucket_map[bucket_key].append(i)
+
+    for i in range(n):
+        if processed[i]:
+            continue
+
+        # 获取当前颜色值
+        L_curr, a_curr, b_curr = lab_colors[i]
+
+        # 收集所有可能相邻的哈希桶（3x3x3=27个桶）
+        l_bucket = int(L_curr // l_thresh)
+        a_bucket = int(a_curr // a_thresh)
+        b_bucket = int(b_curr // b_thresh)
+        candidate_indices = []
+
+        for dl in (-1, 0, 1):
+            for da in (-1, 0, 1):
+                for db in (-1, 0, 1):
+                    bucket_key = (l_bucket + dl, a_bucket + da, b_bucket + db)
+                    candidate_indices.extend(bucket_map.get(bucket_key, []))
+
+        # 去重后筛选符合条件的颜色索引
+        candidate_indices = list(set(candidate_indices))
+        group = []
+        for j in candidate_indices:
+            if not processed[j]:
+                Lj, aj, bj = lab_colors[j]
+                if (abs(Lj - L_curr) <= l_thresh/10 and
+                        abs(aj - a_curr) <= a_thresh/10 and
+                        abs(bj - b_curr) <= b_thresh/10):
+                    group.append(j)
+
+        # 计算中位数并更新结果
+        if group:
+            median_color = np.median(lab_colors[group], axis=0)
+            for idx in group:
+                result[idx] = median_color
+                processed[idx] = True
+
+    return [tuple(r) for r in result]
 
 # def get_draw_list(img, grid_size, palette_tuple, predominant_color):
 #     """
@@ -1042,6 +1184,24 @@ def append_legend(
     return final
 
 
+def denoised_test(img):
+    print(1)
+    image = skio.imread(img)
+    # 非局部均值降噪
+    sigma_est = np.mean(restoration.estimate_sigma(image, channel_axis=-1))
+    denoised = restoration.denoise_nl_means(image, h=0.8 * sigma_est, patch_size=5, patch_distance=6)
+
+    # 将降噪后的数组转换为 PIL.Image 对象
+    denoised_image = Image.fromarray(denoised.astype('uint8'))
+    # 创建内存二进制流
+    img_byte_arr = io.BytesIO()
+    denoised_image.save(img_byte_arr, format='JPEG')  # 或 'PNG'
+    img_byte_arr.seek(0)  # 重置指针位置
+
+    print(time.time())
+    # 返回兼容 st.file_uploader 的类型（BytesIO）
+    return st.image(img_byte_arr, caption="降噪后的图像", use_column_width=True)
+
 # ---------- Streamlit 界面 ----------
 st.title("图纸生成")
 uploaded = st.file_uploader("上传图片", type=['png','jpg','jpeg'])
@@ -1061,11 +1221,13 @@ else:
     palette = local_palette
 
 if uploaded:
+    # uploaded=denoised_test(uploaded)
+
     with st.sidebar:
         st.header("降噪参数")
-        d = st.slider("邻域直径 (d)", 0, 15, 0, help="值越大越模糊")
-        sigmaColor = st.slider("颜色融合度", 0, 120, 0)
-        sigmaSpace = st.slider("空间融合度", 0, 120, 0)
+        d = st.slider("邻域直径 (d)", 0, 20, 0, help="值越大越模糊")
+        sigmaColor = st.slider("颜色融合度", 0, 150, 0)
+        sigmaSpace = st.slider("空间融合度", 0, 150, 0)
 
     img = Image.open(uploaded).convert('RGB')
     img_np = np.array(img)[:, :, ::-1]
@@ -1225,6 +1387,42 @@ if uploaded:
             # st.image(final_img, use_container_width=True, output_format='JPEG')
             st.session_state["final_img"] = final_img
             st.session_state["level_img"] = level_img
+
+    if "final_img" in st.session_state and "level_img" in st.session_state:
+        # 获取图像对象
+        img1 = st.session_state["final_img"]
+        img2 = st.session_state["level_img"]
+
+        # 对齐高度（参考网页3的边界填充）
+        max_height = max(img1.height, img2.height)
+
+        # 创建新画布（网页6/7的核心逻辑）
+        new_width = img1.width + 5 + img2.width  # 5px黑条宽度
+        combined = Image.new("RGB", (new_width, max_height), color=(255, 255, 255))
+
+        # 粘贴第一张图
+        combined.paste(img1, (0, (max_height - img1.height) // 2))
+
+        # 添加黑色分割条（网页3的间隔条思路）
+        combined.paste(Image.new("RGB", (5, max_height), (0, 0, 0)), (img1.width, 0))
+
+        # 粘贴第二张图
+        combined.paste(img2, (img1.width + 5, (max_height - img2.height) // 2))
+
+        # 显示预览
+        st.subheader("拼接图纸预览")
+        st.image(combined, use_container_width=True)
+
+        # 生成下载按钮（网页6的保存逻辑）
+        buf = io.BytesIO()
+        combined.save(buf, format="PNG")
+        buf.seek(0)
+        st.download_button(
+            label="⬇️ 下载拼接图纸",
+            data=buf,
+            file_name=f"combined_drawing_{time.time()}.png",
+            mime="image/png"
+        )
 
 
     #如果缓存里有，就展示并给下载按钮
