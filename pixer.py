@@ -35,12 +35,26 @@ Image.MAX_IMAGE_PIXELS = 10**9
 
 FONT_SIZE=22
 
-KL=0.5
-KC=1.5
-KH=1.5
-L_THRESH=70
-A_THRESH=45
-B_THRESH=45
+
+# KL=0.8
+# KC=1.5
+# KH=1.5
+# L_THRESH=70
+# A_THRESH=45
+# B_THRESH=45
+for name, init in [
+    ("L_THRESH", 70),
+    ("A_THRESH", 45),
+    ("B_THRESH", 45),
+    ("KL", 8),
+    ("KC", 15),
+    ("KH", 15),
+    ("d",2),
+    ("sigmaColor",25),
+    ("sigmaSpace",25),
+]:
+    if name not in st.session_state:
+        st.session_state[name] = init
 
 # ---------- 调色板加载与持久化 ----------
 def save_palette_to_file(palette, filename='saved_palette.pkl'):
@@ -62,7 +76,7 @@ def srgb_to_linear(rgb):
     return linear
 
 def color_to_lab(data:dict,cache_path: str=None):
-    # 步骤1: 生成palette_dict（原有逻辑不变）
+
     """
 
     :param data:
@@ -81,7 +95,9 @@ def color_to_lab(data:dict,cache_path: str=None):
     # 步骤2: 构建names_list和归一化RGB数组（添加Gamma校正）
     names_list = list(palette_dict.keys())
     rgb = []
+    color_16=[]
     for nm in names_list:
+        color_16.append(palette_dict[nm])
         hx = palette_dict[nm].lstrip("#")
         r = int(hx[0:2], 16) / 255.0
         g = int(hx[2:4], 16) / 255.0
@@ -114,7 +130,8 @@ def color_to_lab(data:dict,cache_path: str=None):
             "palette_dict": palette_dict,
             "names_list": names_list,
             "lab_arr": lab_arr.tolist(),
-            "palette_rgb":palette_rgb
+            "palette_rgb":palette_rgb,
+            "color_16": color_16
         }
 
 
@@ -125,7 +142,7 @@ def color_to_lab(data:dict,cache_path: str=None):
 
     # print(f"palette_labs类型 {type(palette_labs)}")
 
-    return palette_dict, names_list, palette_rgb
+    return palette_dict, names_list, palette_rgb,color_16
 
 def load_local_palette(
     json_path: str = "palette.json",
@@ -148,10 +165,10 @@ def load_local_palette(
         names_list   = cache["names_list"]
         palette_rgb = cache["palette_rgb"]
         lab_arr      = np.array(cache["lab_arr"], dtype=float)
-
+        color_16=cache["color_16"]
 
         # palette_labs = [LabColor(*row) for row in lab_arr]
-        return palette_dict, names_list,palette_rgb
+        return palette_dict, names_list,palette_rgb,color_16
 
     # 否则，先读原始 palette.json
     if not os.path.exists(json_path):
@@ -200,7 +217,7 @@ def load_palette(path_or_file):
 
 
 def nearest_color(color, palette):
-    print(time.time())
+    # print(time.time())
     palette_dict, names_list, lab_arr = palette
 
     # print(f"类型{type(lab_arr)}")
@@ -454,7 +471,7 @@ def basic_mosaic(out_list):
 #     return mapping
 
 
-def build_color_mapping(colors, palette_rgb, palette_names, k=20):
+def build_color_mapping(colors, palette_rgb, palette_names,color_16, k=20):
     """
     将一组 Lab 颜色映射到最接近的调色板颜色。
 
@@ -491,16 +508,17 @@ def build_color_mapping(colors, palette_rgb, palette_names, k=20):
         lab_cand = palette_lab[neigh]
 
         # 计算 ΔE2000 并找到最优候选
-        de2000 = deltaE_ciede2000(lab_in[np.newaxis, :, :], lab_cand[np.newaxis, :, :],kL=KL,
-                                  kC=KC,
-                                  kH=KH)
+        de2000 = deltaE_ciede2000(lab_in[np.newaxis, :, :], lab_cand[np.newaxis, :, :],kL=st.session_state.KL/10,
+                                  kC=st.session_state.KC/10,
+                                  kH=st.session_state.KH/10)
         best_idx = np.argmin(de2000[0])
         sel_idx = neigh[best_idx]
 
         # 获取对应的调色板名称和 RGB
         name = palette_names[sel_idx]
-        fill_rgb = tuple(map(int, palette_rgb[sel_idx]))
-        mapping[key] = (name, fill_rgb)
+        # fill_rgb = tuple(map(int, palette_rgb[sel_idx]))
+        fill_16 = color_16[sel_idx]
+        mapping[key] = (name, fill_16)
 
     return mapping
 
@@ -509,6 +527,7 @@ def build_color_mapping(colors, palette_rgb, palette_names, k=20):
 
 
 def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
+
     w, h = img.size
     cols = math.ceil(w / grid_size)
     rows = math.ceil(h / grid_size)
@@ -553,8 +572,10 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
     colors=merge_similar_colors(colors_lab)  #lab
 
     # 2) 批量去重＋映射
-    _, name_list, palette_rgb = palette_tuple
-    mapping = build_color_mapping(colors, palette_rgb, name_list)
+    # print(palette_tuple)
+    _, name_list, palette_rgb,color_16 = palette_tuple
+    # print(palette_16)
+    mapping = build_color_mapping(colors, palette_rgb, name_list,color_16)
 
 
     # print(print(type(colors[0])))
@@ -564,8 +585,8 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
     # 3) 最终填充 out_list 和 color_count
     out_list, color_count = {}, {}
     for coord,col in zip(coords, colors):
-        print(f"coord is {coord}  {type(coord)}\n")
-        print(f"col is {col}  {type(col) }\n")
+        # print(f"coord is {coord}  {type(coord)}\n")
+        # print(f"col is {col}  {type(col) }\n")
 
         name, fill = mapping[col]
         out_list[coord] = [col, name, fill]
@@ -574,7 +595,8 @@ def get_draw_list(img, grid_size, palette_tuple, predominant_color, test=False):
     return out_list, color_count
 
 
-def merge_similar_colors(lab_colors, l_thresh=L_THRESH, a_thresh=A_THRESH, b_thresh=B_THRESH):
+def merge_similar_colors(lab_colors, l_thresh=st.session_state.L_THRESH, a_thresh=st.session_state.A_THRESH, b_thresh=st.session_state.B_THRESH):
+    print(f"执行降噪{l_thresh},{a_thresh},{b_thresh}")
     n = len(lab_colors)
     processed = np.zeros(n, dtype=bool)
     result = np.zeros_like(lab_colors)
@@ -739,6 +761,8 @@ def draw_list(out_list,isIndex=True,isLevel=False):
 
     # 6) 遍历每个格子，绘制色块＋文字
     for (orig_x, orig_y), (orig_color, name, fill) in out_list.items():
+        # print(orig_color)
+
         # 计算在新画布上的行列索引
         col = x_coords.index(orig_x)
         row = y_coords.index(orig_y)
@@ -759,8 +783,20 @@ def draw_list(out_list,isIndex=True,isLevel=False):
 
 
         if isIndex:
+            # 如果 fill 是 "#RRGGBB" 或 "#RGB" 格式的字符串，就先把它解析成 (R, G, B)
+            if isinstance(fill, str) and fill.startswith('#'):
+                hexstr = fill.lstrip('#')
+                if len(hexstr) == 3:  # 短格式 "#RGB"
+                    fill_rgb = tuple(int(c * 2, 16) for c in hexstr)
+                elif len(hexstr) == 6:  # 长格式 "#RRGGBB"
+                    fill_rgb = tuple(int(hexstr[i:i + 2], 16) for i in (0, 2, 4))
+                else:
+                    raise ValueError(f"Unsupported hex color: {fill}")
+            else:
+                fill_rgb = fill  # 原本就是 (R, G, B) 三元组
+
             #决定文字颜色（明亮用黑，暗色用白）
-            brightness = fill[0] * 0.299 + fill[1] * 0.587 + fill[2] * 0.114
+            brightness = fill_rgb[0] * 0.299 + fill_rgb[1] * 0.587 + fill_rgb[2] * 0.114
             text_color = (0, 0, 0) if brightness > 186 else (255, 255, 255)
 
             #测量文字尺寸，居中绘制
@@ -1203,263 +1239,289 @@ def denoised_test(img):
     return st.image(img_byte_arr, caption="降噪后的图像", use_column_width=True)
 
 # ---------- Streamlit 界面 ----------
-st.title("图纸生成")
-uploaded = st.file_uploader("上传图片", type=['png','jpg','jpeg'])
-def init():
-    st.session_state.grid_size = 20
-if 'grid_size' not in st.session_state:
-    init()
-local_palette = load_local_palette()
-palette_file = st.file_uploader("上传调色板 JSON（不选择则采取默认值 mard：221）", type=['json'])
-if palette_file:
-    try:
-        palette = load_palette(palette_file)
-    except ValueError as e:
-        st.error(str(e))
-        st.stop()
-else:
-    palette = local_palette
-
-if uploaded:
-    # uploaded=denoised_test(uploaded)
-
-    with st.sidebar:
-        st.header("降噪参数")
-        d = st.slider("邻域直径 (d)", 0, 20, 0, help="值越大越模糊")
-        sigmaColor = st.slider("颜色融合度", 0, 150, 0)
-        sigmaSpace = st.slider("空间融合度", 0, 150, 0)
-
-    img = Image.open(uploaded).convert('RGB')
-    img_np = np.array(img)[:, :, ::-1]
-
-    denoised_img_np = cv2.bilateralFilter(img_np, d=d, sigmaColor=sigmaColor, sigmaSpace=sigmaSpace)
-    denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
-
-    st.image(denoised_img, caption="降噪图", use_container_width=True)
+def main():
 
 
 
-    st.markdown("#### 调整网格大小")
+    print(st.session_state)
 
-    method = st.radio(
-        "选取主色算法",
-        ("中位数:像素图推荐使用", "最大值:像素图，且图片质量较好时推荐使用","量化众数","平均值:非像素图推荐使用"),
-        index=0,
-        key="color_method",
-        horizontal = True,
-        help="像素图不要选择最后一个"
-    )
-
-    if st.session_state.color_method.startswith("中位数"):
-        predominant_color = predominant_median
-    elif st.session_state.color_method.startswith("最大值"):
-        predominant_color = predominant_max
-    elif st.session_state.color_method.startswith("量化众数"):
-        predominant_color = quantized_mode
-    else:
-        predominant_color = predominant_mean
-
-    col1, col2 = st.columns([8, 2])
-    # 右侧精确输入
-    with col2:
-        st.number_input(
-            "",
-            min_value=1.0,
-            value=float(st.session_state.grid_size),
-            step=0.01,
-            format="%.2f",
-            key='num_in',
-            label_visibility='hidden',
-            on_change=lambda: st.session_state.update(grid_size=st.session_state.num_in)
-        )
-
-    # 左侧滑块
-    with col1:
-        st.slider(
-            "",
-            min_value=1.0,
-            max_value=float(min(img.size) // 3),
-            value=float(st.session_state.grid_size),
-            step=0.01,
-            format="%.2f",
-            key='slider',
-            label_visibility='hidden',
-            on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
-        )
-    gs = st.session_state.grid_size
-    st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True)
-
-    #     out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
-    #     basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
-    #     out_img = draw_list(out_list)[0]
-    #     out_img = draw_5x5_grid(out_img, cell_size)
-    #     annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
-    #     final_img = append_legend(annotated,color_count, palette)
-    #
-    #     out_level_img = Level_mapped_mosaic(out_list)[0]
-    #     out_level_img = draw_5x5_grid(out_level_img, cell_size)
-    #     annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
-    #     level_img = append_legend(annotated, color_count, palette)
-    #
-    #     # 缩放以保证最小格尺寸
-    #     min_cell = 10
-    #     scale = math.ceil(min_cell / gs) if gs < min_cell else 1
-    #     if scale > 1:
-    #         basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
-    #         final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
-    #         level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
-    #     st.subheader("预览")
-    #     st.image(basic, use_container_width=True)
-    #     # st.subheader("图纸")
-    #     # # st.image(final_img, use_container_width=True)
-    #     # # arr = np.array(final_img)
-    #     # # st.image(arr, use_container_width=True)
-    #     # st.image(final_img, use_container_width=True, output_format='JPEG')
-    #     st.session_state["final_img"] = final_img
-    #     st.session_state["level_img"] = level_img
-    if st.button("生成图纸"):
+    st.title("图纸生成")
+    uploaded = st.file_uploader("上传图片", type=['png','jpg','jpeg'])
+    def init():
+        st.session_state.grid_size = 20
+    if 'grid_size' not in st.session_state:
+        init()
+    local_palette = load_local_palette()
+    palette_file = st.file_uploader("上传调色板 JSON（不选择则采取默认值 mard：221）", type=['json'])
+    if palette_file:
         try:
-            progress = st.progress(0)
-            start=time.time()
-            MAX_SECONDS=60
-            # 步骤 1：分块并统计
-            # print(type(palette[-1]))
-            out_list, color_count = get_draw_list(denoised_img, gs, palette, predominant_color)
-            elapsed = time.time() - start
-            if elapsed > MAX_SECONDS:
-                raise TimeoutError
-            progress.progress(20)
+            palette = load_palette(palette_file)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+    else:
+        palette = local_palette
 
-            # 步骤 2：基本马赛克
-            basic, cell_size, rows, cols, font = draw_list(out_list, isIndex=False)
-            elapsed = time.time() - start
-            if elapsed > MAX_SECONDS:
-                raise TimeoutError
-            progress.progress(40)
 
-            # 步骤 3：生成图纸并注释
-            final_img = draw_list(out_list)[0]
-            final_img = draw_5x5_grid(final_img, cell_size)
-            annotated = annotate_mapped(final_img, cell_size, rows, cols, font)
-            final_img = append_legend(annotated, color_count, palette[0])
-            elapsed = time.time() - start
-            if elapsed > MAX_SECONDS:
-                raise TimeoutError
-            progress.progress(60)
 
-            # 步骤 4：生成反转
-            out_level_img = Level_mapped_mosaic(out_list)[0]
-            out_level_img = draw_5x5_grid(out_level_img, cell_size)
-            annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
-            level_img = append_legend(annotated, color_count, palette[0])
-            elapsed = time.time() - start
-            if elapsed > MAX_SECONDS:
-                raise TimeoutError
-            progress.progress(80)
+    # —— 创建滑块，指定 key ——
+    with st.sidebar:
+        st.header("去杂色阈值")
+        st.slider("L（亮度） 通道强度", 10, 400, value=st.session_state.L_THRESH, key="L_THRESH")
+        st.slider("A（红绿） 通道强度", 10, 400, value=st.session_state.A_THRESH, key="A_THRESH")
+        st.slider("B（蓝黄） 通道强度", 10, 400, value=st.session_state.B_THRESH, key="B_THRESH")
 
-            # test = draw_list(out_list, isIndex=False)[0]
-            # st.image(test, caption=f"采样测试", use_container_width=True)
+        st.header("映射算法")
+        st.slider("L（亮度）影响", 0, 20, value=st.session_state.KL , key="KL")
+        st.slider("A（红绿）影响", 0, 20, value=st.session_state.KC , key="KC")
+        st.slider("B（蓝黄）影响", 0, 20, value=st.session_state.KH , key="KH")
 
-            # 步骤 5：尺寸调整
-            min_cell = 10
-            scale = math.ceil(min_cell / gs) if gs < min_cell else 1
-            if scale > 1:
-                basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
-                final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
-                level_img = level_img.resize((level_img.width * scale, level_img.height * scale), Image.NEAREST)
-                # test_img=test.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
-            elapsed = time.time() - start
-            if elapsed > MAX_SECONDS:
-                raise TimeoutError
-            progress.progress(100)
+        st.header("降噪参数")
+        st.slider("邻域直径 (d)", 0, 20, value=st.session_state.d, key="d")
+        st.slider("颜色融合度", 0, 150, value=st.session_state.sigmaColor, key="sigmaColor")
+        st.slider("空间融合度", 0, 150, value=st.session_state.sigmaSpace, key="sigmaSpace")
 
-        except TimeoutError:
-            st.error(f"⚠️ 处理已超过 {MAX_SECONDS} 秒，像素格数量可能过多，建议调大网格大小后再试。")
+
+    if uploaded:
+        # uploaded=denoised_test(uploaded)
+
+        img = Image.open(uploaded).convert('RGB')
+        img_np = np.array(img)[:, :, ::-1]
+
+        denoised_img_np = cv2.bilateralFilter(img_np, d=st.session_state.d, sigmaColor=st.session_state.sigmaColor, sigmaSpace=st.session_state.sigmaSpace)
+        denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
+
+        st.image(denoised_img, caption="降噪图", use_container_width=True)
+
+
+
+
+
+        st.markdown("#### 调整网格大小")
+
+        method = st.radio(
+            "选取主色算法",
+            ("中位数:像素图推荐使用", "最大值:像素图，且图片质量较好时推荐使用","量化众数","平均值:非像素图推荐使用"),
+            index=0,
+            key="color_method",
+            horizontal = True,
+            help="像素图不要选择最后一个"
+        )
+
+        if st.session_state.color_method.startswith("中位数"):
+            predominant_color = predominant_median
+        elif st.session_state.color_method.startswith("最大值"):
+            predominant_color = predominant_max
+        elif st.session_state.color_method.startswith("量化众数"):
+            predominant_color = quantized_mode
         else:
-            # 成功完成
-            st.success("✅ 生成完毕")
-            st.subheader("预览")
-            st.image(basic, use_container_width=True)
-            # st.subheader("图纸")
-            # # st.image(final_img, use_container_width=True)
-            # # arr = np.array(final_img)
-            # # st.image(arr, use_container_width=True)
-            # st.image(final_img, use_container_width=True, output_format='JPEG')
-            st.session_state["final_img"] = final_img
-            st.session_state["level_img"] = level_img
+            predominant_color = predominant_mean
 
-    if "final_img" in st.session_state and "level_img" in st.session_state:
-        # 获取图像对象
-        img1 = st.session_state["final_img"]
-        img2 = st.session_state["level_img"]
+        col1, col2 = st.columns([8, 2])
+        # 右侧精确输入
+        with col2:
+            st.number_input(
+                "",
+                min_value=1.0,
+                value=float(st.session_state.grid_size),
+                step=0.01,
+                format="%.2f",
+                key='num_in',
+                label_visibility='hidden',
+                on_change=lambda: st.session_state.update(grid_size=st.session_state.num_in)
+            )
 
-        # 对齐高度（参考网页3的边界填充）
-        max_height = max(img1.height, img2.height)
+        # 左侧滑块
+        with col1:
+            st.slider(
+                "",
+                min_value=1.0,
+                max_value=float(min(img.size) // 3),
+                value=float(st.session_state.grid_size),
+                step=0.01,
+                format="%.2f",
+                key='slider',
+                label_visibility='hidden',
+                on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
+            )
+        gs = st.session_state.grid_size
+        st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True)
 
-        # 创建新画布（网页6/7的核心逻辑）
-        new_width = img1.width + 5 + img2.width  # 5px黑条宽度
-        combined = Image.new("RGB", (new_width, max_height), color=(255, 255, 255))
+        #     out_list, color_count=get_draw_list(img, gs, palette,predominant_color)
+        #     basic,cell_size,rows,cols,font = draw_list(out_list,isIndex=False)
+        #     out_img = draw_list(out_list)[0]
+        #     out_img = draw_5x5_grid(out_img, cell_size)
+        #     annotated = annotate_mapped(out_img, cell_size, rows,cols,font)
+        #     final_img = append_legend(annotated,color_count, palette)
+        #
+        #     out_level_img = Level_mapped_mosaic(out_list)[0]
+        #     out_level_img = draw_5x5_grid(out_level_img, cell_size)
+        #     annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
+        #     level_img = append_legend(annotated, color_count, palette)
+        #
+        #     # 缩放以保证最小格尺寸
+        #     min_cell = 10
+        #     scale = math.ceil(min_cell / gs) if gs < min_cell else 1
+        #     if scale > 1:
+        #         basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
+        #         final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+        #         level_img=level_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+        #     st.subheader("预览")
+        #     st.image(basic, use_container_width=True)
+        #     # st.subheader("图纸")
+        #     # # st.image(final_img, use_container_width=True)
+        #     # # arr = np.array(final_img)
+        #     # # st.image(arr, use_container_width=True)
+        #     # st.image(final_img, use_container_width=True, output_format='JPEG')
+        #     st.session_state["final_img"] = final_img
+        #     st.session_state["level_img"] = level_img
+        if st.button("生成图纸"):
+            try:
+                progress = st.progress(0)
+                start=time.time()
+                MAX_SECONDS=60
+                # 步骤 1：分块并统计
+                # print(type(palette[-1]))
 
-        # 粘贴第一张图
-        combined.paste(img1, (0, (max_height - img1.height) // 2))
+                out_list, color_count = get_draw_list(denoised_img, gs, palette, predominant_color)
+                elapsed = time.time() - start
+                if elapsed > MAX_SECONDS:
+                    raise TimeoutError
+                progress.progress(20)
 
-        # 添加黑色分割条（网页3的间隔条思路）
-        combined.paste(Image.new("RGB", (5, max_height), (0, 0, 0)), (img1.width, 0))
+                # 步骤 2：基本马赛克
+                basic, cell_size, rows, cols, font = draw_list(out_list, isIndex=False)
+                elapsed = time.time() - start
+                if elapsed > MAX_SECONDS:
+                    raise TimeoutError
+                progress.progress(40)
 
-        # 粘贴第二张图
-        combined.paste(img2, (img1.width + 5, (max_height - img2.height) // 2))
+                # 步骤 3：生成图纸并注释
+                final_img = draw_list(out_list)[0]
+                final_img = draw_5x5_grid(final_img, cell_size)
+                annotated = annotate_mapped(final_img, cell_size, rows, cols, font)
+                final_img = append_legend(annotated, color_count, palette[0])
+                elapsed = time.time() - start
+                if elapsed > MAX_SECONDS:
+                    raise TimeoutError
+                progress.progress(60)
 
-        # 显示预览
-        st.subheader("拼接图纸预览")
-        st.image(combined, use_container_width=True)
+                # 步骤 4：生成反转
+                out_level_img = Level_mapped_mosaic(out_list)[0]
+                out_level_img = draw_5x5_grid(out_level_img, cell_size)
+                annotated = annotate_mapped(out_level_img, cell_size, rows, cols, font)
+                level_img = append_legend(annotated, color_count, palette[0])
+                elapsed = time.time() - start
+                if elapsed > MAX_SECONDS:
+                    raise TimeoutError
+                progress.progress(80)
 
-        # 生成下载按钮（网页6的保存逻辑）
-        buf = io.BytesIO()
-        combined.save(buf, format="PNG")
-        buf.seek(0)
-        st.download_button(
-            label="⬇️ 下载拼接图纸",
-            data=buf,
-            file_name=f"combined_drawing_{time.time()}.png",
-            mime="image/png"
-        )
+                # test = draw_list(out_list, isIndex=False)[0]
+                # st.image(test, caption=f"采样测试", use_container_width=True)
+
+                # 步骤 5：尺寸调整
+                min_cell = 10
+                scale = math.ceil(min_cell / gs) if gs < min_cell else 1
+                if scale > 1:
+                    basic = basic.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
+                    final_img = final_img.resize((final_img.width * scale, final_img.height * scale), Image.NEAREST)
+                    level_img = level_img.resize((level_img.width * scale, level_img.height * scale), Image.NEAREST)
+                    # test_img=test.resize((basic.width * scale, basic.height * scale), Image.NEAREST)
+                elapsed = time.time() - start
+                if elapsed > MAX_SECONDS:
+                    raise TimeoutError
+                progress.progress(100)
+
+            except TimeoutError:
+                st.error(f"⚠️ 处理已超过 {MAX_SECONDS} 秒，像素格数量可能过多，建议调大网格大小后再试。")
+            else:
+                # 成功完成
+                st.success("✅ 生成完毕")
+                st.subheader("预览")
+                st.image(basic, use_container_width=True)
+                # st.subheader("图纸")
+                # # st.image(final_img, use_container_width=True)
+                # # arr = np.array(final_img)
+                # # st.image(arr, use_container_width=True)
+                # st.image(final_img, use_container_width=True, output_format='JPEG')
+                st.session_state["final_img"] = final_img
+                st.session_state["level_img"] = level_img
+
+        if "final_img" in st.session_state and "level_img" in st.session_state:
+            # 获取图像对象
+            img1 = st.session_state["final_img"]
+            img2 = st.session_state["level_img"]
+
+            # 对齐高度（参考网页3的边界填充）
+            max_height = max(img1.height, img2.height)
+
+            # 创建新画布（网页6/7的核心逻辑）
+            new_width = img1.width + 5 + img2.width  # 5px黑条宽度
+            combined = Image.new("RGB", (new_width, max_height), color=(255, 255, 255))
+
+            # 粘贴第一张图
+            combined.paste(img1, (0, (max_height - img1.height) // 2))
+
+            # 添加黑色分割条（网页3的间隔条思路）
+            combined.paste(Image.new("RGB", (5, max_height), (0, 0, 0)), (img1.width, 0))
+
+            # 粘贴第二张图
+            combined.paste(img2, (img1.width + 5, (max_height - img2.height) // 2))
+
+            # 显示预览
+            st.subheader("拼接图纸预览")
+            st.image(combined, use_container_width=True)
+
+            # 生成下载按钮（网页6的保存逻辑）
+            buf = io.BytesIO()
+            combined.save(buf, format="PNG")
+            buf.seek(0)
+            st.download_button(
+                label="⬇️ 下载拼接图纸",
+                data=buf,
+                file_name=f"combined_drawing_{time.time()}.png",
+                mime="image/png"
+            )
 
 
-    #如果缓存里有，就展示并给下载按钮
-    if "final_img" in st.session_state:
-        st.subheader("图纸（预览）")
-        st.image(
-            st.session_state["final_img"],
-            use_container_width=True
-        )
+        #如果缓存里有，就展示并给下载按钮
+        if "final_img" in st.session_state:
+            st.subheader("图纸（预览）")
+            st.image(
+                st.session_state["final_img"],
+                use_container_width=True
+            )
 
-        # 准备原始大图二进制
-        buf = io.BytesIO()
-        st.session_state["final_img"].save(buf, format="PNG")
-        buf.seek(0)
+            # 准备原始大图二进制
+            buf = io.BytesIO()
+            st.session_state["final_img"].save(buf, format="PNG")
+            buf.seek(0)
 
-        st.download_button(
-            label="⬇️ 下载原始大小图纸",
-            data=buf,
-            file_name=f"图纸_fullsize{time.time()}.png",
-            mime="image/png"
-        )
+            st.download_button(
+                label="⬇️ 下载原始大小图纸",
+                data=buf,
+                file_name=f"图纸_fullsize{time.time()}.png",
+                mime="image/png"
+            )
 
-    if "level_img" in st.session_state:
-        st.subheader("图纸（水平反转预览）")
-        st.image(
-            st.session_state["level_img"],
-            use_container_width=True
-        )
+        if "level_img" in st.session_state:
+            st.subheader("图纸（水平反转预览）")
+            st.image(
+                st.session_state["level_img"],
+                use_container_width=True
+            )
 
-        # 准备原始大图二进制
-        buf = io.BytesIO()
-        st.session_state["level_img"].save(buf, format="PNG")
-        buf.seek(0)
+            # 准备原始大图二进制
+            buf = io.BytesIO()
+            st.session_state["level_img"].save(buf, format="PNG")
+            buf.seek(0)
 
-        st.download_button(
-            label="⬇️ 下载原始大小图纸",
-            data=buf,
-            file_name=f"水平反转图纸_fullsize{time.time()}.png",
-            mime="image/png"
-        )
+            st.download_button(
+                label="⬇️ 下载原始大小图纸",
+                data=buf,
+                file_name=f"水平反转图纸_fullsize{time.time()}.png",
+                mime="image/png"
+            )
+
+if __name__ == "__main__":
+    main()
