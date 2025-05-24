@@ -42,8 +42,8 @@ def draw_color_grid(hex_colors, columns=15, square_size=50, output_path='color_g
 
 if __name__ == '__main__':
 
-    if os.path.exists("palette.json"):
-        with open("palette.json", "r", encoding="utf-8") as f:
+    if os.path.exists("palette_1.json"):
+        with open("palette_1.json", "r", encoding="utf-8") as f:
             data = json.load(f)
 
     colors = []
