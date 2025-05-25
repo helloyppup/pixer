@@ -30,7 +30,7 @@ def load_local_palette(
         rgb_line=np.array(cache["rgb_line"],dtype=int)
         labs = np.array(cache["labs"], dtype=float)
 
-        print(hexs[56])
+        # print(hexs[56])
 
         return names,rgbs,labs,hexs,rgb_line
 
@@ -89,7 +89,7 @@ def color_to_rgb(data: dict):
         vals = tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
         # vals = [int(hex_str[i:i+2], 16)/255.0 for i in (0, 2, 4)]
         srgb.append(vals)
-    print(srgb)
+    # print(srgb)
     srgb_arr = np.array(srgb, dtype=int)
     rgb_line  = srgb_to_linear(srgb_arr)
 

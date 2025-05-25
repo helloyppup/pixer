@@ -59,7 +59,7 @@ def draw():
         denoised_img_np = cv2.bilateralFilter(img_np, d=st.session_state.d, sigmaColor=st.session_state.sigmaColor, sigmaSpace=st.session_state.sigmaSpace)
         denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
 
-        st.image(denoised_img, caption="降噪图", use_container_width=True)
+        st.image(denoised_img, caption="降噪图", use_container_width=False,output_format='PNG',width=denoised_img.width)
 
 
 
@@ -113,7 +113,7 @@ def draw():
                 on_change=lambda: st.session_state.update(grid_size=st.session_state.slider)
             )
         gs = st.session_state.grid_size
-        st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True)
+        st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True,output_format='PNG')
         if st.button("生成图纸"):
             try:
                 progress = st.progress(0)
@@ -175,9 +175,13 @@ def draw():
                 st.error(f"⚠️ 处理已超过 {MAX_SECONDS} 秒，像素格数量可能过多，建议调大网格大小后再试。")
             else:
                 # 成功完成
+                # x0 = 0 * cell_size
+                # y0 = 0 * cell_size
+                # px = basic.getpixel((x0 + cell_size // 2, y0 + cell_size // 2))
+                # print(px)
                 st.success("✅ 生成完毕")
                 st.subheader("预览")
-                st.image(basic, use_container_width=True)
+                st.image(basic, use_container_width=True,output_format='PNG')
                 # st.subheader("图纸")
                 # # st.image(final_img, use_container_width=True)
                 # # arr = np.array(final_img)
@@ -191,10 +195,10 @@ def draw():
             img1 = st.session_state["final_img"]
             img2 = st.session_state["level_img"]
 
-            # 对齐高度（参考网页3的边界填充）
+            # 对齐高度
             max_height = max(img1.height, img2.height)
 
-            # 创建新画布（网页6/7的核心逻辑）
+            # 创建新画布
             new_width = img1.width + 5 + img2.width  # 5px黑条宽度
             combined = Image.new("RGB", (new_width, max_height), color=(255, 255, 255))
 
@@ -228,7 +232,8 @@ def draw():
             st.subheader("图纸（预览）")
             st.image(
                 st.session_state["final_img"],
-                use_container_width=True
+                use_container_width=True,
+                output_format='PNG'
             )
 
             # 准备原始大图二进制
@@ -247,7 +252,8 @@ def draw():
             st.subheader("图纸（水平反转预览）")
             st.image(
                 st.session_state["level_img"],
-                use_container_width=True
+                use_container_width=True,
+                output_format='PNG'
             )
 
             # 准备原始大图二进制

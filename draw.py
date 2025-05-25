@@ -177,14 +177,20 @@ def draw_list(out_list,isIndex=True,isLevel=False):
 
         # print(f"RGB:{hex}:{rgb}")
         rgb=tuple(rgb)
+        # if name=="C9":
+        #     print(rgb)
+
+
         # 6.1 绘制填充方块
         draw.rectangle(
             [x0, y0, x0 + cell_size, y0 + cell_size],
             fill=rgb,
             outline=None
         )
-        if name=="D2":
-            print(rgb)
+        # pixel = out_img.getpixel((x0 + 1, y0 + 1))
+        # print(f"{pixel},{rgb}")
+
+
 
 
 

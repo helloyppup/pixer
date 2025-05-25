@@ -46,6 +46,8 @@
 # # B_THRESH=45
 import os
 
+from PIL import Image
+
 from page.home import draw
 
 
@@ -1144,6 +1146,11 @@ import streamlit as st
 
 def main():
     print(st.session_state)
+    # test = Image.new("RGB", (10, 10), color=(76, 77, 225))
+    # test.save("debug.png", format="PNG")  # 无损保存
+    #
+    # reloaded = Image.open("debug.png")
+    # print("pixel:", reloaded.getpixel((5, 5)))
     st.set_page_config(page_title="拼豆！")
     init_session_state()
     draw()

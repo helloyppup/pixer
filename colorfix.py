@@ -40,7 +40,7 @@ def build_color_mapping(colors, palette,k=20):
 
     # 处理输入的 Lab 颜色为np数组
     colors_lab = np.array(colors, dtype=float).reshape(-1, 3)
-    print(colors_lab)
+    # print(colors_lab)
 
     # 构建 KD 树进行粗筛
     tree = cKDTree(labs)
@@ -71,7 +71,11 @@ def build_color_mapping(colors, palette,k=20):
         # fill_rgb = tuple(map(int, palette_rgb[sel_idx]))
         hex = hexs[sel_idx]
         rgb = rgbs[sel_idx]
-        # print(sel_idx)
+        # if name == "C9":
+        #     print(sel_idx)
+        #     print(hex)
+        #     print(rgbs[sel_idx])
+        #     print(rgb)
         mapping[key] = (name, hex,rgb)
 
     # print(f"mapping: {mapping}")
