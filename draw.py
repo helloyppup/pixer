@@ -298,19 +298,19 @@ def annotate_mapped(
 
     # 左侧：行号 1..rows
     for r in range(rows):
-        label = str(c+1)
+        label = str(r + 1)
         tw, th = font.getbbox(label)[2:]
         tx = (cell_size - tw) / 2
         ty = (r + 1) * cell_size + (cell_size - th) / 2
-        draw.text((tx, ty), label, fill=(0,0,0), font=font)
+        draw.text((tx, ty), label, fill=(0, 0, 0), font=font)
 
     # 右侧：行号 1..rows
     for r in range(rows):
-        label = str(c+1)
+        label = str(r + 1)
         tw, th = font.getbbox(label)[2:]
         tx = (cols + 1) * cell_size + (cell_size - tw) / 2
         ty = (r + 1) * cell_size + (cell_size - th) / 2
-        draw.text((tx, ty), label, fill=(0,0,0), font=font)
+        draw.text((tx, ty), label, fill=(0, 0, 0), font=font)
 
     return annotated
 
