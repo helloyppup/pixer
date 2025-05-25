@@ -59,7 +59,7 @@ def draw():
         denoised_img_np = cv2.bilateralFilter(img_np, d=st.session_state.d, sigmaColor=st.session_state.sigmaColor, sigmaSpace=st.session_state.sigmaSpace)
         denoised_img = Image.fromarray(denoised_img_np[:, :, ::-1])
 
-        st.image(denoised_img, caption="降噪图", use_container_width=False,output_format='PNG',width=denoised_img.width)
+        st.image(denoised_img, caption="降噪图", use_container_width=True,output_format='PNG')
 
 
 
@@ -104,7 +104,7 @@ def draw():
             st.slider(
                 "",
                 min_value=1.0,
-                max_value=float(min(img.size) // 3),
+                max_value=float(min(img.size) // 20),
                 value=float(st.session_state.grid_size),
                 step=0.01,
                 format="%.2f",
