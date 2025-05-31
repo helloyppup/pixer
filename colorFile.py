@@ -9,7 +9,8 @@ import streamlit as st
 
 def load_local_palette(
     json_path: str = "palette.json",
-    cache_path: str = "palette_lab_cache.json"
+    cache_path: str = "palette_lab_cache.json",
+    overwrite: bool = True,
 ):
     """
     加载 palette_1.json，并缓存一次性计算好的 Lab 数组到 cache_path。
@@ -21,18 +22,19 @@ def load_local_palette(
     不会修改原来的 palette_1.json，只会创建/读取 cache_path。
     """
     # 如果缓存已经存在，直接读它
-    if os.path.exists(cache_path):
-        with open(cache_path, encoding="utf-8") as f:
-            cache = json.load(f)
-        hexs = cache["hexs"]
-        names   = cache["names"]
-        rgbs = np.array(cache["rgbs"],dtype=int)
-        rgb_line=np.array(cache["rgb_line"],dtype=int)
-        labs = np.array(cache["labs"], dtype=float)
+    if not overwrite:
+        if os.path.exists(cache_path):
+            with open(cache_path, encoding="utf-8") as f:
+                cache = json.load(f)
+            hexs = cache["hexs"]
+            names   = cache["names"]
+            rgbs = np.array(cache["rgbs"],dtype=int)
+            rgb_line=np.array(cache["rgb_line"],dtype=int)
+            labs = np.array(cache["labs"], dtype=float)
 
-        # print(hexs[56])
+            # print(hexs[56])
 
-        return names,rgbs,labs,hexs,rgb_line
+            return names,rgbs,labs,hexs,rgb_line
 
     # 否则，先读原始 palette_1.json
     if not os.path.exists(json_path):
@@ -104,10 +106,7 @@ def color_to_lab(rgb_list):
     return rgb2lab(rgb_list[np.newaxis, :, :])[0]
 
 
-def write_to_cach(cache_path,name,hex,rgb,lab,rgb_line,overwrite=False):
-    if overwrite:
-        if os.path.exists(cache_path):
-            return
+def write_to_cach(cache_path,name,hex,rgb,lab,rgb_line):
 
     # 序列化到缓存文件，下次直接用
     rgb = rgb.tolist()

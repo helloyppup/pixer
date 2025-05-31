@@ -42,12 +42,17 @@ def build_color_mapping(colors, palette,k=20):
     colors_lab = np.array(colors, dtype=float).reshape(-1, 3)
     # print(colors_lab)
 
+    mapping = {}
+
+    # 首先直接对比有没有一样的hex
+
+
     # 构建 KD 树进行粗筛
     tree = cKDTree(labs)
     _, idxs = tree.query(colors_lab, k=k)
 
     # print(f"idxs: {idxs}")
-    mapping = {}
+
     for orig_lab, lab_vec, neigh in zip(colors, colors_lab, idxs):
         # 将原始 Lab 转换为浮点元组作为键
         key = tuple(float(x) for x in orig_lab)

@@ -114,7 +114,7 @@ def draw():
             )
         gs = st.session_state.grid_size
         st.image(draw_grid_overlay(denoised_img, gs), caption=f"网格预览", use_container_width=True,output_format='PNG')
-        if st.button("生成图纸"):
+        if st.button("生成图纸",use_container_width=True,type="primary"):
             try:
                 progress = st.progress(0)
                 start=time.time()

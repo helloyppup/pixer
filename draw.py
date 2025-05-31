@@ -31,9 +31,11 @@ def draw_grid_overlay(img, grid_size, line_color=(255,0,0,128)):
 def get_draw_list(img, grid_size, palette, predominant_color):
 
     w, h = img.size
-    cols = math.ceil(w / grid_size)
-    rows = math.ceil(h / grid_size)
+    # cols = math.ceil(w / grid_size)
+    # rows = math.ceil(h / grid_size)
     arr = np.array(img)
+    cols=int(w//grid_size)
+    rows=int(h//grid_size)
 
     coords, colors = [], []
 
@@ -52,7 +54,7 @@ def get_draw_list(img, grid_size, palette, predominant_color):
 
             # 先取整格
             full_box = arr[y0:y1, x0:x1]
-            if full_box.size == 0:
+            if full_box.size == 0 :
                 continue
 
             # 计算内缩后的子区域坐标
